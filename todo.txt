@@ -1,0 +1,59 @@
+https://ucphchemometrics.com/
+
+## GC-MS Deconvolution Benchmark — Strategy Summary
+
+### Goal
+Build a **data generator** that produces realistic synthetic GC-MS intensity matrices with known ground truth, so you can benchmark how well your deconvolution pipeline separates overlapping molecules.
+
+### What the generator produces
+An intensity matrix (scans × m/z) containing a mixture of molecules, plus the ground truth (individual components) stored separately for evaluation.
+
+### Generator inputs
+
+**Global parameters:**
+- Number of scans (e.g., 120)
+- m/z range (e.g., 30–300)
+- Baseline level (calibrated from real CDF files — look at Copenhagen Apple Wine or similar)
+- Total TIC apex height (also calibrated from real data)
+
+**Per molecule:**
+- A mass spectrum (from MoNA library, EI spectra)
+- An elution profile shape (extracted from real GC-MS CDF files)
+- Apex position (which scan)
+- Relative proportion in the mixture (e.g., 70%, 30%)
+
+### How the generator computes the intensity matrix
+
+1. **Normalize** each library spectrum so the ion intensities sum to 1
+2. **Split** the TIC apex height by the mixture proportions (e.g., 70% of 2,000,000 = 1,400,000 for molecule A)
+3. **Multiply** the normalized spectrum by the molecule's TIC share → gives the apex height of each individual ion
+4. **Multiply** each ion's apex height by the elution profile shape over time → gives the full time series per ion
+5. **Sum** all molecules together into one combined matrix
+6. **Add noise:**
+   - Poisson noise (dominant — naturally makes weak signals noisier)
+   - Smooth baseline drift (~1,000 counts, slowly varying)
+   - Small Gaussian electronic noise
+
+### Where to get the building blocks
+
+**Mass spectra:** Download from MoNA (MassBank of North America) — bulk download the GC-MS/EI subset. Each spectrum is labeled with compound name and structure.
+
+**Elution profile shapes:** Extract from real GC-MS CDF files by picking well-resolved isolated peaks. Good sources:
+- Copenhagen datasets (Apple Wine, Camel Cheese, Wine) — CDF format, free
+- MassOmics dataset (400 runs, huge variety)
+- GNPS/MetaboLights public studies
+
+**Realistic intensity scale:** Open a real CDF file in Python, look at the TIC, note baseline level and typical peak heights. Use those numbers to calibrate your generator parameters.
+
+### Benchmarking your deconvolution
+
+You know the ground truth (each molecule's spectrum, profile, and proportion), so you can measure:
+- Does the algorithm recover the correct number of components?
+- How closely does each recovered spectrum match the input spectrum? (cosine similarity)
+- How closely does each recovered elution profile match the input profile?
+- How do results degrade with increasing overlap, increasing noise, or decreasing concentration?
+
+### What to explore later (not now)
+- Library matching and compound identification benchmarking (needs standard mixture datasets like FAME-37)
+- Quantification benchmarking (needs concentration series with known amounts)
+- The **mzrtsim** R package already does something similar and could save you work or serve as a reference implementation
