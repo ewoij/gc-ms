@@ -2,7 +2,6 @@
 
 Outputs:
     time.npy  — acquisition times in seconds, shape (num_scans,)
-    fid.npy   — total ion chromatogram, shape (num_scans,)
     ms.npy    — intensity matrix, shape (num_scans, mz_max - mz_min + 1)
                column i corresponds to m/z = mz_min + i
 """
@@ -17,7 +16,6 @@ from scipy.io import netcdf_file
 def extract(cdf_path: Path, outdir: Path) -> None:
     with netcdf_file(str(cdf_path), "r", mmap=False) as f:
         time = np.array(f.variables["scan_acquisition_time"].data, dtype=np.float64)
-        fid = np.array(f.variables["total_intensity"].data, dtype=np.float64)
 
         mass_values = np.array(f.variables["mass_values"].data, dtype=np.float32)
         intensity_values = np.array(f.variables["intensity_values"].data, dtype=np.float32)
@@ -38,12 +36,10 @@ def extract(cdf_path: Path, outdir: Path) -> None:
 
     outdir.mkdir(parents=True, exist_ok=True)
     np.save(outdir / "time.npy", time)
-    np.save(outdir / "fid.npy", fid)
     np.save(outdir / "ms.npy", ms)
 
     print(f"{cdf_path.name}: {num_scans} scans, m/z {mz_min}–{mz_max} ({num_mz} bins)")
     print(f"  -> {outdir}/time.npy  {time.shape}")
-    print(f"  -> {outdir}/fid.npy   {fid.shape}")
     print(f"  -> {outdir}/ms.npy    {ms.shape}")
 
 
