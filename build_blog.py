@@ -184,6 +184,12 @@ def build_html():
 <h1>Building a Synthetic GC-MS Data Generator</h1>
 <p class="subtitle">From raw chromatography data to labeled training sets for component counting</p>
 
+<p style="background: #fff3cd; padding: 12px 16px; border-radius: 6px; font-size: 0.9em;">
+<strong>Disclaimer:</strong> I'm learning as I go here &mdash; I have no formal background in
+analytical chemistry or chemometrics. This is very much a "figure it out as you build it" project,
+and nothing here should be taken as state of the art. If you spot something wrong or know a better
+way, I'd love to hear about it!</p>
+
 <h2>1. Why Synthetic Data?</h2>
 <p>In GC-MS analysis, overlapping peaks are everywhere. Before you can deconvolve them,
 you need to know <em>how many components</em> are hiding in each peak cluster.
@@ -278,9 +284,9 @@ tailing/fronting edge components.</p>
 </body>
 </html>"""
 
-    with open("blog.html", "w") as f:
+    with open("index.html", "w") as f:
         f.write(html)
-    print("-> blog.html")
+    print("-> index.html")
 
 
 if __name__ == "__main__":
