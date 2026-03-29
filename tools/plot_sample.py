@@ -10,8 +10,9 @@ from pathlib import Path
 import json
 
 import numpy as np
-from bokeh.layouts import column
+from bokeh.layouts import column, gridplot
 from bokeh.models import Div, Range1d, RangeTool
+from bokeh.palettes import Category10, Turbo256
 from bokeh.plotting import figure, save, output_file
 
 
@@ -21,26 +22,11 @@ def plot_sample(sample_dir: Path):
     tic = ms.sum(axis=1)
 
     plots = []
-
-    # Ground truth components (if available)
     gt_dir = sample_dir / "ground_truth"
-    if gt_dir.exists():
-        gt_files = sorted(gt_dir.glob("*.npy"), key=lambda p: int(p.stem))
-        if gt_files:
-            p_gt = figure(title=f"Input Components — {sample_dir.name}",
-                          x_axis_label="Scan", y_axis_label="Intensity",
-                          width=1000, height=300)
-            for gt_path in gt_files:
-                gt = np.load(gt_path)
-                gt_tic = gt.sum(axis=1)
-                p_gt.line(scans, gt_tic, legend_label=f"Molecule {gt_path.stem}")
-            p_gt.legend.click_policy = "hide"
-            plots.append(p_gt)
 
     # TIC
     p_tic = figure(title=f"TIC — {sample_dir.name}", x_axis_label="Scan",
-                   y_axis_label="Intensity", width=1000, height=300,
-                   x_range=plots[0].x_range if plots else None)
+                   y_axis_label="Intensity", width=1000, height=300)
     p_tic.line(scans, tic)
     plots.append(p_tic)
 
@@ -51,16 +37,57 @@ def plot_sample(sample_dir: Path):
     p_detail = figure(title=f"Ion Traces — {sample_dir.name}", x_axis_label="Scan",
                       y_axis_label="Intensity", width=1000, height=400,
                       x_range=detail_range)
-    xs = [scans] * ms.shape[1]
-    ys = [ms[:, i] for i in range(ms.shape[1])]
-    p_detail.multi_line(xs, ys, line_alpha=0.3, line_width=0.5)
+    num_ions = ms.shape[1]
+    colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
+    xs = [scans] * num_ions
+    ys = [ms[:, i] for i in range(num_ions)]
+    p_detail.multi_line(xs, ys, line_color=colors, line_alpha=0.4, line_width=0.5)
     plots.append(p_detail)
 
     # Range tool on TIC
     p_tic.add_tools(RangeTool(x_range=detail_range))
 
-    # Config JSON (if available)
+    # Ground truth components (if available)
     config_path = sample_dir / "config.json"
+    if gt_dir.exists():
+        gt_files = sorted(gt_dir.glob("*.npy"), key=lambda p: int(p.stem))
+        num_mol = len(gt_files)
+        mol_palette = Category10[max(num_mol, 3)]
+
+        if gt_files:
+            p_gt = figure(title=f"Input Components — {sample_dir.name}",
+                          x_axis_label="Scan", y_axis_label="Intensity",
+                          width=1000, height=300, x_range=p_tic.x_range)
+            for i, gt_path in enumerate(gt_files):
+                gt = np.load(gt_path)
+                gt_tic = gt.sum(axis=1)
+                p_gt.line(scans, gt_tic, legend_label=f"Molecule {gt_path.stem}",
+                          color=mol_palette[i])
+            p_gt.legend.click_policy = "hide"
+            plots.append(p_gt)
+
+        # Molecule spectra
+        if config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
+            with open(Path("data/spectra.json")) as f:
+                spectra_lib = json.load(f)
+
+            spec_plots = []
+            for i, mol in enumerate(config.get("molecules", [])):
+                spectrum = spectra_lib[mol["spectrum"]]
+                mzs = [p[0] for p in spectrum["peaks"]]
+                intensities = [p[1] for p in spectrum["peaks"]]
+                name = spectrum.get("name", f"Spectrum {mol['spectrum']}")
+                p_spec = figure(title=f"Mol {i}: {name}", x_axis_label="m/z",
+                                y_axis_label="Intensity", width=330, height=250)
+                p_spec.vbar(x=mzs, top=intensities, width=0.8, color=mol_palette[i])
+                spec_plots.append(p_spec)
+
+            if spec_plots:
+                plots.append(gridplot([spec_plots], merge_tools=False))
+
+    # Config JSON (if available)
     if config_path.exists():
         with open(config_path) as f:
             config_text = json.dumps(json.load(f), indent=2)
