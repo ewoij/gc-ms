@@ -290,6 +290,47 @@ def plot_confusion_matrix():
     return p
 
 
+def plot_example_peak():
+    """Show a concrete example: ion traces, TIC, ground truth, and prediction."""
+    sample_dir = Path("data/synthetic_peaks/0007")
+    ms = np.load(sample_dir / "ms.npy")
+    scans = np.arange(ms.shape[0])
+    tic = ms.sum(axis=1)
+
+    gt_files = sorted((sample_dir / "ground_truth").glob("*.npy"), key=lambda p: int(p.stem))
+    num_mol = len(gt_files)
+    mol_palette = Category10[max(num_mol, 3)]
+
+    # Ion traces — this is what the instrument gives you
+    num_ions = ms.shape[1]
+    ion_colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
+    p_ions = figure(title="What the instrument sees: 301 ion channels",
+                    x_axis_label="Scan", y_axis_label="Intensity",
+                    width=900, height=350)
+    xs = [scans] * num_ions
+    ys = [ms[:, i] for i in range(num_ions)]
+    p_ions.multi_line(xs, ys, line_color=ion_colors, line_alpha=0.4, line_width=0.5)
+
+    # TIC
+    p_tic = figure(title="Total Ion Chromatogram (sum of all ions)",
+                   x_axis_label="Scan", y_axis_label="Intensity",
+                   width=900, height=250, x_range=p_ions.x_range)
+    p_tic.line(scans, tic, line_width=2)
+
+    # Ground truth reveal
+    p_gt = figure(title="The answer: 4 hidden molecules (ground truth)",
+                  x_axis_label="Scan", y_axis_label="Intensity",
+                  width=900, height=250, x_range=p_ions.x_range)
+    p_gt.line(scans, tic, color="black", line_width=1.5, line_alpha=0.3)
+    for i, gt_path in enumerate(gt_files):
+        gt = np.load(gt_path)
+        gt_tic = gt.sum(axis=1)
+        p_gt.line(scans, gt_tic, legend_label=f"Molecule {i}", color=mol_palette[i], line_width=2)
+    p_gt.legend.click_policy = "hide"
+
+    return column(p_ions, p_tic, p_gt)
+
+
 def plot_feature_importances():
     model = joblib.load("models/component_counter/model.joblib")
     imp = model.feature_importances_
@@ -446,11 +487,13 @@ tailing/fronting edge components.</p>
 
 
 def build_estimator_post():
+    p0 = plot_example_peak()
     p1 = plot_sample_components_grid()
     p2 = plot_svd_curves()
     p3 = plot_confusion_matrix()
     p4 = plot_feature_importances()
 
+    s0, d0 = components(p0)
     s1, d1 = components(p1)
     s2, d2 = components(p2)
     s3, d3 = components(p3)
@@ -461,12 +504,27 @@ def build_estimator_post():
 <p class="subtitle">Using singular value decomposition to estimate how many molecules overlap in a GC-MS peak</p>
 
 <h2>1. The Problem</h2>
-<p>Given a noisy GC-MS intensity matrix (scans &times; m/z), how many independent
-molecular components are contributing to the signal? This is the key question
-before any deconvolution can happen.</p>
-<p>Here are some examples from our synthetic dataset &mdash; the black line is the
-combined TIC (what the instrument sees), and the colored lines are the hidden
-individual components (our ground truth):</p>
+<p>In GC-MS, each molecule produces a unique pattern across hundreds of ion channels
+as it elutes through the column. When molecules coelute (overlap in time), their signals
+mix together into a tangled mess of overlapping peaks. The instrument gives you a matrix
+of intensities &mdash; scans &times; m/z channels &mdash; but no indication of how many
+molecules are hiding in there.</p>
+
+<p>Here's a concrete example. This is what 4 overlapping molecules look like:</p>
+
+<div class="plot">{d0}</div>
+{s0}
+
+<p>The top plot shows the raw ion channels &mdash; hundreds of signals overlapping in time,
+each colored by m/z. The middle plot is the TIC (sum of all ions) &mdash; it looks like
+one or two broad peaks, but there are actually <strong>4 molecules</strong> hiding in there
+(bottom plot). Could you have guessed that from the TIC alone?</p>
+
+<p>This is the challenge: given only the noisy intensity matrix, figure out how many
+independent components are present. It's the essential first step before any
+deconvolution can happen.</p>
+
+<p>The problem scales too &mdash; here are more examples with varying numbers of components:</p>
 
 <div class="plot">{d1}</div>
 {s1}
