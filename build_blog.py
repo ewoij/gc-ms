@@ -270,7 +270,7 @@ def plot_confusion_matrix():
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
             xs.append(labels[j])
-            ys.append(labels[cm.shape[0] - 1 - i])
+            ys.append(labels[i])
             vals.append(str(cm[i][j]))
             intensity = cm[i][j] / max_val if max_val > 0 else 0
             ci = int(intensity * 255)
