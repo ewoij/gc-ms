@@ -10,7 +10,7 @@ import numpy as np
 from bokeh.embed import components
 from bokeh.layouts import column, gridplot
 from bokeh.models import Range1d, RangeTool
-from bokeh.palettes import Category10, Turbo256, Viridis256
+from bokeh.palettes import Category10, TolRainbow, Turbo256, Viridis256
 from bokeh.plotting import figure
 from bokeh.resources import CDN
 from scipy.interpolate import interp1d
@@ -83,7 +83,7 @@ def plot_real_sample():
 
     detail_range = Range1d(start=0, end=200)
     num_ions = ms.shape[1]
-    colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
+    colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
 
     p_ions = figure(title="Ion Traces (200-scan window)", x_axis_label="Scan",
                     y_axis_label="Intensity", width=900, height=300,
@@ -173,7 +173,7 @@ def plot_synthetic():
     p_tic.line(scans, tic)
 
     num_ions = ms.shape[1]
-    colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
+    colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
     p_ions = figure(title="Ion Traces", x_axis_label="Scan",
                     y_axis_label="Intensity", width=900, height=300,
                     x_range=p_gt.x_range)
@@ -303,7 +303,7 @@ def plot_example_peak():
 
     # Ion traces — this is what the instrument gives you
     num_ions = ms.shape[1]
-    ion_colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
+    ion_colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
     p_ions = figure(title="What the instrument sees: 301 ion channels",
                     x_axis_label="Scan", y_axis_label="Intensity",
                     width=900, height=350)
