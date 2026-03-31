@@ -396,7 +396,7 @@ def build_index():
   </li>
   <li style="opacity: 0.5;">
     <span style="font-size: 1.2em; font-weight: 600;">Part 4: Deconvoluting Real Peaks</span>
-    <p>Upcoming &mdash; hopefully that works!</p>
+    <p>Upcoming &mdash; hopefully that works! 😱😂</p>
   </li>
 </ul>
 
