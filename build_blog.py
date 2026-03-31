@@ -90,7 +90,7 @@ def plot_real_sample():
                     x_range=detail_range)
     xs = [scans] * num_ions
     ys = [ms[:, i] for i in range(num_ions)]
-    p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.4, line_width=0.5)
+    p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.8, line_width=0.7)
 
     p_tic.add_tools(RangeTool(x_range=detail_range))
     return column(p_tic, p_ions)
@@ -179,7 +179,7 @@ def plot_synthetic():
                     x_range=p_gt.x_range)
     xs = [scans] * num_ions
     ys = [ms[:, i] for i in range(num_ions)]
-    p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.4, line_width=0.5)
+    p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.8, line_width=0.7)
 
     spec_plots = []
     for i, mol in enumerate(config.get("molecules", [])):
@@ -309,7 +309,7 @@ def plot_example_peak():
                     width=900, height=350)
     xs = [scans] * num_ions
     ys = [ms[:, i] for i in range(num_ions)]
-    p_ions.multi_line(xs, ys, line_color=ion_colors, line_alpha=0.4, line_width=0.5)
+    p_ions.multi_line(xs, ys, line_color=ion_colors, line_alpha=0.8, line_width=0.7)
 
     # TIC
     p_tic = figure(title="Total Ion Chromatogram (sum of all ions)",
