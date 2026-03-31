@@ -390,6 +390,14 @@ def build_index():
     <a href="posts/estimator.html">Part 2: Counting Components with SVD</a>
     <p>Using singular value decomposition and a random forest to estimate overlapping molecule count — 98.5% accuracy.</p>
   </li>
+  <li style="opacity: 0.5;">
+    <span style="font-size: 1.2em; font-weight: 600;">Part 3: Recovering Elution Profiles</span>
+    <p>Upcoming</p>
+  </li>
+  <li style="opacity: 0.5;">
+    <span style="font-size: 1.2em; font-weight: 600;">Part 4: Deconvoluting Real Peaks</span>
+    <p>Upcoming &mdash; hopefully that works!</p>
+  </li>
 </ul>
 
 <div style="background: #e8e8e8; padding: 12px 16px; border-radius: 6px; margin-top: 3em; font-size: 0.9em;">
