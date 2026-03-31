@@ -1,18 +1,76 @@
-"""Generate the blog post HTML with embedded Bokeh plots."""
+"""Generate the multi-page blog with embedded Bokeh plots."""
 
+import csv
 import json
 import random
 from pathlib import Path
 
+import joblib
 import numpy as np
 from bokeh.embed import components
 from bokeh.layouts import column, gridplot
 from bokeh.models import Range1d, RangeTool
-from bokeh.palettes import Category10, Turbo256
+from bokeh.palettes import Category10, Turbo256, Viridis256
 from bokeh.plotting import figure
 from bokeh.resources import CDN
 from scipy.interpolate import interp1d
 
+
+# -- Shared HTML --
+
+CSS = """
+  body {
+    max-width: 960px;
+    margin: 40px auto;
+    padding: 0 20px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    background: #fafafa;
+  }
+  h1 { font-size: 1.8em; margin-bottom: 0.2em; }
+  h2 { font-size: 1.3em; margin-top: 2em; border-bottom: 1px solid #ddd; padding-bottom: 0.3em; }
+  .subtitle { color: #666; margin-bottom: 2em; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #f0f0f0; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }
+  .plot { margin: 1.5em 0; }
+  .stat { background: #e8f4f8; padding: 12px 16px; border-radius: 6px; margin: 1em 0; font-size: 0.95em; }
+  .disclaimer { background: #fff3cd; padding: 12px 16px; border-radius: 6px; font-size: 0.9em; }
+  a { color: #0366d6; }
+  .nav { margin-bottom: 2em; font-size: 0.9em; }
+  .post-list { list-style: none; padding: 0; }
+  .post-list li { margin: 1.5em 0; }
+  .post-list a { font-size: 1.2em; font-weight: 600; }
+  .post-list p { margin: 0.3em 0 0; color: #666; }
+"""
+
+DISCLAIMER = """<p class="disclaimer">
+<strong>Disclaimer:</strong> I'm learning as I go here &mdash; I have no formal background in
+analytical chemistry or chemometrics. This is very much a "figure it out as you build it" project,
+and nothing here should be taken as state of the art. If you spot something wrong or know a better
+way, I'd love to hear about it!</p>"""
+
+
+def wrap_page(title, body, nav_back=False):
+    nav = ""
+    if nav_back:
+        nav = '<div class="nav"><a href="../index.html">&larr; All posts</a></div>'
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+{CDN.render()}
+<style>{CSS}</style>
+</head>
+<body>
+{nav}
+{body}
+</body>
+</html>"""
+
+
+# -- Post 1: Generator plots --
 
 def plot_real_sample():
     ms = np.load("data/A0/ms.npy")
@@ -101,7 +159,6 @@ def plot_synthetic():
     num_mol = len(gt_files)
     mol_palette = Category10[max(num_mol, 3)]
 
-    # Components
     p_gt = figure(title="Input Components (ground truth)", x_axis_label="Scan",
                   y_axis_label="Intensity", width=900, height=250)
     for i, gt_path in enumerate(gt_files):
@@ -110,13 +167,11 @@ def plot_synthetic():
         p_gt.line(scans, gt_tic, legend_label=f"Molecule {i}", color=mol_palette[i])
     p_gt.legend.click_policy = "hide"
 
-    # TIC
     p_tic = figure(title="Combined TIC (with noise)", x_axis_label="Scan",
                    y_axis_label="Intensity", width=900, height=250,
                    x_range=p_gt.x_range)
     p_tic.line(scans, tic)
 
-    # Ion traces
     num_ions = ms.shape[1]
     colors = [Turbo256[int(i * 255 / max(num_ions - 1, 1))] for i in range(num_ions)]
     p_ions = figure(title="Ion Traces", x_axis_label="Scan",
@@ -126,7 +181,6 @@ def plot_synthetic():
     ys = [ms[:, i] for i in range(num_ions)]
     p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.4, line_width=0.5)
 
-    # Spectra
     spec_plots = []
     for i, mol in enumerate(config.get("molecules", [])):
         spectrum = spectra_lib[mol["spectrum"]]
@@ -142,7 +196,151 @@ def plot_synthetic():
     return column(p_gt, p_tic, p_ions, gridplot([spec_plots], merge_tools=False))
 
 
-def build_html():
+# -- Post 2: Estimator plots --
+
+def plot_sample_components_grid():
+    random.seed(42)
+    samples = sorted(Path("data/synthetic_peaks").glob("*/ms.npy"))
+    sampled = random.sample(samples, 12)
+
+    plots = []
+    for ms_path in sorted(sampled):
+        sample_dir = ms_path.parent
+        name = sample_dir.name
+        ms = np.load(ms_path)
+        tic = ms.sum(axis=1)
+        gt_files = sorted((sample_dir / "ground_truth").glob("*.npy"), key=lambda p: int(p.stem))
+        n = len(gt_files)
+        palette = Category10[max(n, 3)]
+
+        p = figure(title=f"{name} ({n}c)", width=220, height=160)
+        p.line(np.arange(len(tic)), tic, color="black", line_width=1.5, line_alpha=0.4)
+        for i, gt_path in enumerate(gt_files):
+            gt = np.load(gt_path)
+            gt_tic = gt.sum(axis=1)
+            p.line(np.arange(len(gt_tic)), gt_tic, color=palette[i % len(palette)], line_alpha=0.7)
+        p.title.text_font_size = "9pt"
+        plots.append(p)
+
+    return gridplot([plots[i:i+4] for i in range(0, 12, 4)], merge_tools=False)
+
+
+def plot_svd_curves():
+    """Show singular value decay for samples with different component counts."""
+    with open("data/synthetic_peaks/metadata.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # Pick one sample per component count 1-5 and 8,10
+    targets = {1: None, 2: None, 3: None, 5: None, 8: None, 10: None}
+    for row in rows:
+        nc = int(row["num_components"])
+        if nc in targets and targets[nc] is None:
+            targets[nc] = row["sample_id"]
+
+    palette = Category10[max(len(targets), 3)]
+    p = figure(title="Singular Value Decay by Component Count",
+               x_axis_label="Singular Value Index", y_axis_label="Normalized Value",
+               width=900, height=350, y_axis_type="log")
+
+    for i, (nc, sid) in enumerate(sorted(targets.items())):
+        if sid is None:
+            continue
+        ms = np.load(f"data/synthetic_peaks/{sid}/ms.npy")
+        _, s, _ = np.linalg.svd(ms, full_matrices=False)
+        s_norm = s[:20] / s[0]
+        p.line(np.arange(20), s_norm, legend_label=f"{nc} components",
+               color=palette[i % len(palette)], line_width=2)
+        p.scatter(np.arange(20), s_norm, color=palette[i % len(palette)], size=4)
+
+    p.legend.click_policy = "hide"
+    p.legend.location = "top_right"
+    return p
+
+
+def plot_confusion_matrix():
+    with open("models/component_counter/metrics.json") as f:
+        metrics = json.load(f)
+
+    cm = np.array(metrics["confusion_matrix"])
+    labels = list(range(1, cm.shape[0] + 1))
+
+    # Build data for rect plot
+    xs, ys, vals, colors_list = [], [], [], []
+    max_val = cm.max()
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            xs.append(labels[j])
+            ys.append(labels[cm.shape[0] - 1 - i])
+            vals.append(str(cm[i][j]))
+            intensity = cm[i][j] / max_val if max_val > 0 else 0
+            ci = int(intensity * 255)
+            colors_list.append(Viridis256[ci])
+
+    p = figure(title=f"Confusion Matrix (accuracy: {metrics['accuracy']:.1%})",
+               x_axis_label="Predicted", y_axis_label="Actual",
+               width=500, height=500,
+               x_range=[str(l) for l in labels],
+               y_range=[str(l) for l in reversed(labels)])
+    p.rect(x=[str(x) for x in xs], y=[str(y) for y in ys],
+           width=1, height=1, color=colors_list, line_color="white")
+    p.text(x=[str(x) for x in xs], y=[str(y) for y in ys],
+           text=vals, text_align="center", text_baseline="middle",
+           text_font_size="11pt", text_color="white")
+
+    return p
+
+
+def plot_feature_importances():
+    model = joblib.load("models/component_counter/model.joblib")
+    imp = model.feature_importances_
+
+    p = figure(title="Feature Importances (Random Forest)",
+               x_axis_label="Singular Value Index", y_axis_label="Importance",
+               width=900, height=300)
+    p.vbar(x=np.arange(len(imp)), top=imp, width=0.7)
+    return p
+
+
+# -- Build all pages --
+
+def build_index():
+    body = f"""
+<h1>GC-MS Deconvolution Project</h1>
+<p class="subtitle">Exploring chemometrics with synthetic data and machine learning</p>
+
+{DISCLAIMER}
+
+<ul class="post-list">
+  <li>
+    <a href="posts/generator.html">Part 1: Building a Synthetic GC-MS Data Generator</a>
+    <p>From raw CDF files to a realistic data generator using real elution profiles and mass spectra.</p>
+  </li>
+  <li>
+    <a href="posts/estimator.html">Part 2: Counting Components with SVD</a>
+    <p>Using singular value decomposition and a random forest to estimate overlapping molecule count — 98.5% accuracy.</p>
+  </li>
+</ul>
+
+<div style="background: #e8e8e8; padding: 12px 16px; border-radius: 6px; margin-top: 3em; font-size: 0.9em;">
+I have to give kudos to <a href="https://claude.ai/code">Claude Code</a> here.
+This whole project &mdash; parsing raw instrument files, extracting and clustering
+peak shapes, building a data generator, training a model, and writing this blog &mdash;
+was built in a couple of hours. The efficiency is honestly amazing and almost scary
+at times.</div>
+
+<hr style="margin-top: 3em; border: none; border-top: 1px solid #ddd;">
+<p style="color: #999; font-size: 0.85em;">
+  By <strong>Jonas Berdoz</strong> &middot;
+  Data sources:
+  <a href="https://ucphchemometrics.com/">Copenhagen Soft Camel Cheese GC-MS dataset</a>,
+  <a href="https://github.com/MassBank/MassBank-data">MassBank mass spectral library</a>
+</p>"""
+    html = wrap_page("GC-MS Deconvolution Project", body)
+    Path("index.html").write_text(html)
+    print("-> index.html")
+
+
+def build_generator_post():
     p1 = plot_real_sample()
     p2 = plot_peak_grid()
     p3 = plot_cluster_overview()
@@ -153,42 +351,9 @@ def build_html():
     s3, d3 = components(p3)
     s4, d4 = components(p4)
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Building a Synthetic GC-MS Data Generator</title>
-{CDN.render()}
-<style>
-  body {{
-    max-width: 960px;
-    margin: 40px auto;
-    padding: 0 20px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    line-height: 1.6;
-    color: #333;
-    background: #fafafa;
-  }}
-  h1 {{ font-size: 1.8em; margin-bottom: 0.2em; }}
-  h2 {{ font-size: 1.3em; margin-top: 2em; border-bottom: 1px solid #ddd; padding-bottom: 0.3em; }}
-  .subtitle {{ color: #666; margin-bottom: 2em; }}
-  code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
-  pre {{ background: #f0f0f0; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }}
-  .plot {{ margin: 1.5em 0; }}
-  .stat {{ background: #e8f4f8; padding: 12px 16px; border-radius: 6px; margin: 1em 0; font-size: 0.95em; }}
-  a {{ color: #0366d6; }}
-</style>
-</head>
-<body>
-
+    body = f"""
 <h1>Building a Synthetic GC-MS Data Generator</h1>
 <p class="subtitle">From raw chromatography data to labeled training sets for component counting</p>
-
-<p style="background: #fff3cd; padding: 12px 16px; border-radius: 6px; font-size: 0.9em;">
-<strong>Disclaimer:</strong> I'm learning as I go here &mdash; I have no formal background in
-analytical chemistry or chemometrics. This is very much a "figure it out as you build it" project,
-and nothing here should be taken as state of the art. If you spot something wrong or know a better
-way, I'd love to hear about it!</p>
 
 <h2>1. Why Synthetic Data?</h2>
 <p>In GC-MS analysis, overlapping peaks are everywhere. Before you can deconvolve them,
@@ -265,29 +430,129 @@ tailing/fronting edge components.</p>
 <div class="plot">{d4}</div>
 {s4}
 
-<h2>7. What's Next</h2>
-<p>With the generator in place, the next steps are:</p>
-<ul>
-  <li>Generate a large training dataset with varying numbers of components (1&ndash;10+),
-      different degrees of overlap, noise levels, and intensities</li>
-  <li>Train a model to predict the number of components from the intensity matrix</li>
-  <li>Use component count estimation as the first step in a deconvolution pipeline</li>
-</ul>
+<p><a href="estimator.html">Next: Part 2 &mdash; Counting Components with SVD &rarr;</a></p>
 
 <hr style="margin-top: 3em; border: none; border-top: 1px solid #ddd;">
 <p style="color: #999; font-size: 0.85em;">
   Data sources:
   <a href="https://ucphchemometrics.com/">Copenhagen Soft Camel Cheese GC-MS dataset</a>,
   <a href="https://github.com/MassBank/MassBank-data">MassBank mass spectral library</a>
-</p>
+</p>"""
 
-</body>
-</html>"""
+    html = wrap_page("Building a Synthetic GC-MS Data Generator", body, nav_back=True)
+    Path("posts").mkdir(exist_ok=True)
+    Path("posts/generator.html").write_text(html)
+    print("-> posts/generator.html")
 
-    with open("index.html", "w") as f:
-        f.write(html)
-    print("-> index.html")
+
+def build_estimator_post():
+    p1 = plot_sample_components_grid()
+    p2 = plot_svd_curves()
+    p3 = plot_confusion_matrix()
+    p4 = plot_feature_importances()
+
+    s1, d1 = components(p1)
+    s2, d2 = components(p2)
+    s3, d3 = components(p3)
+    s4, d4 = components(p4)
+
+    body = f"""
+<h1>Counting Components with SVD</h1>
+<p class="subtitle">Using singular value decomposition to estimate how many molecules overlap in a GC-MS peak</p>
+
+<h2>1. The Problem</h2>
+<p>Given a noisy GC-MS intensity matrix (scans &times; m/z), how many independent
+molecular components are contributing to the signal? This is the key question
+before any deconvolution can happen.</p>
+<p>Here are some examples from our synthetic dataset &mdash; the black line is the
+combined TIC (what the instrument sees), and the colored lines are the hidden
+individual components (our ground truth):</p>
+
+<div class="plot">{d1}</div>
+{s1}
+
+<h2>2. SVD as Feature Extractor</h2>
+<p>Singular Value Decomposition factors the intensity matrix <code>M</code> into three parts:</p>
+<pre>U, s, Vt = np.linalg.svd(M, full_matrices=False)</pre>
+<ul>
+  <li><strong>U</strong> &mdash; elution profiles (how each component varies over time)</li>
+  <li><strong>s</strong> &mdash; singular values (how &ldquo;strong&rdquo; each component is)</li>
+  <li><strong>Vt</strong> &mdash; mass spectra (each component's spectral fingerprint)</li>
+</ul>
+<p>The key insight: for a matrix with <em>k</em> independent molecules, the first <em>k</em>
+singular values will be large, and the rest will drop to noise level. The shape of this
+decay curve encodes the component count.</p>
+
+<div class="plot">{d2}</div>
+{s2}
+
+<p>The drop-off is clearly visible &mdash; a 2-component mixture has a sharp drop after s[1],
+while a 10-component mixture stays elevated much longer. But where exactly to draw the
+cutoff is noisy and varies &mdash; perfect job for a classifier.</p>
+
+<h2>3. The Model</h2>
+<p>We keep it simple: extract the first 20 normalized singular values as features,
+and train a <strong>random forest classifier</strong> (200 trees) to predict the
+component count (1&ndash;10).</p>
+<pre>features = s[:20] / s[0]  # normalized singular value decay
+model = RandomForestClassifier(n_estimators=200)
+model.fit(X_train, y_train)</pre>
+<p>Training data: 1,000 synthetic samples generated with our
+<a href="generator.html">data generator</a> (800 train / 200 test, stratified split).</p>
+
+<h2>4. Results</h2>
+
+<div class="stat">Test accuracy: <strong>98.5%</strong> &mdash; only 3 errors out of 200, all off-by-one</div>
+
+<div class="plot" style="display: flex; gap: 2em; flex-wrap: wrap;">
+  <div>{d3}</div>
+</div>
+{s3}
+
+<p>The confusion matrix shows near-perfect diagonal &mdash; misclassifications only happen
+between adjacent counts (e.g. predicting 3 instead of 2), which makes sense for
+borderline cases.</p>
+
+<h3>Feature Importances</h3>
+<div class="plot">{d4}</div>
+{s4}
+
+<p>The middle singular values (s[2]&ndash;s[7]) are the most informative &mdash; s[0] is
+always 1 (after normalization), s[1] is almost always high, and the late values are
+mostly noise. The discriminative signal lives in the transition zone.</p>
+
+<h2>5. Try It</h2>
+<pre>from tools.estimate_components import estimate_components
+import numpy as np
+
+ms = np.load("data/synthetic_peaks/0042/ms.npy")
+n = estimate_components(ms)
+print(f"Estimated components: {{n}}")  # -> 4</pre>
+
+<h2>6. What's Next</h2>
+<p>Now that we can estimate <em>how many</em> components are present, the next challenge
+is actually <em>separating</em> them &mdash; recovering each molecule's individual
+elution profile and mass spectrum from the mixed signal.</p>
+
+<p><a href="generator.html">&larr; Part 1: Building the Data Generator</a></p>
+
+<hr style="margin-top: 3em; border: none; border-top: 1px solid #ddd;">
+<p style="color: #999; font-size: 0.85em;">
+  Built with <a href="https://scikit-learn.org">scikit-learn</a> and
+  <a href="https://bokeh.org">Bokeh</a>
+</p>"""
+
+    html = wrap_page("Counting Components with SVD", body, nav_back=True)
+    Path("posts").mkdir(exist_ok=True)
+    Path("posts/estimator.html").write_text(html)
+    print("-> posts/estimator.html")
 
 
 if __name__ == "__main__":
-    build_html()
+    print("Building index...")
+    build_index()
+    print("Building post 1: generator...")
+    build_generator_post()
+    print("Building post 2: estimator...")
+    build_estimator_post()
+    print("Done!")
