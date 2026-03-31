@@ -292,7 +292,7 @@ def plot_confusion_matrix():
 
 def plot_example_peak():
     """Show a concrete example: ion traces, TIC, ground truth, and prediction."""
-    sample_dir = Path("data/synthetic_peaks/0007")
+    sample_dir = Path("data/synthetic_peaks/0104")
     ms = np.load(sample_dir / "ms.npy")
     scans = np.arange(ms.shape[0])
     tic = ms.sum(axis=1)
