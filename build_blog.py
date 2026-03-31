@@ -257,6 +257,36 @@ def plot_svd_curves():
     return p
 
 
+def plot_svd_grid():
+    """Grid of 10 plots, one per component count, showing all SVD curves overlaid."""
+    with open("data/synthetic_peaks/metadata.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    # Group samples by component count
+    by_count = {}
+    for row in rows:
+        nc = int(row["num_components"])
+        by_count.setdefault(nc, []).append(row["sample_id"])
+
+    plots = []
+    for nc in range(1, 11):
+        sids = by_count.get(nc, [])
+        p = figure(title=f"{nc} component{'s' if nc > 1 else ''} ({len(sids)} samples)",
+                   width=450, height=250, y_axis_type="log")
+        if nc == 1 or nc == 6:
+            p.yaxis.axis_label = "Normalized Value"
+        if nc >= 6:
+            p.xaxis.axis_label = "Singular Value Index"
+        for sid in sids:
+            ms = np.load(f"data/synthetic_peaks/{sid}/ms.npy")
+            _, s, _ = np.linalg.svd(ms, full_matrices=False)
+            s_norm = s[:20] / s[0]
+            p.line(np.arange(20), s_norm, line_alpha=0.3, line_width=0.8, color="#1f77b4")
+        plots.append(p)
+
+    return gridplot([plots[i:i+2] for i in range(0, 10, 2)], merge_tools=False)
+
+
 def plot_confusion_matrix():
     with open("models/component_counter/metrics.json") as f:
         metrics = json.load(f)
@@ -490,12 +520,14 @@ def build_estimator_post():
     p0 = plot_example_peak()
     p1 = plot_sample_components_grid()
     p2 = plot_svd_curves()
+    p2b = plot_svd_grid()
     p3 = plot_confusion_matrix()
     p4 = plot_feature_importances()
 
     s0, d0 = components(p0)
     s1, d1 = components(p1)
     s2, d2 = components(p2)
+    s2b, d2b = components(p2b)
     s3, d3 = components(p3)
     s4, d4 = components(p4)
 
@@ -545,8 +577,18 @@ decay curve encodes the component count.</p>
 {s2}
 
 <p>The drop-off is clearly visible &mdash; a 2-component mixture has a sharp drop after s[1],
-while a 10-component mixture stays elevated much longer. But where exactly to draw the
-cutoff is noisy and varies &mdash; perfect job for a classifier.</p>
+while a 10-component mixture stays elevated much longer.</p>
+
+<p>Here's the full picture &mdash; all SVD decay curves from our dataset, grouped by
+component count. Each faint line is one sample. You can see the clusters tighten as
+the pattern becomes consistent within each group:</p>
+
+<div class="plot">{d2b}</div>
+{s2b}
+
+<p>The curves clearly separate by component count, but there's overlap and noise &mdash;
+especially between adjacent counts. Where exactly to draw the cutoff varies from sample
+to sample. Perfect job for a classifier.</p>
 
 <h2>3. The Model</h2>
 <p>We keep it simple: extract the first 20 normalized singular values as features,
