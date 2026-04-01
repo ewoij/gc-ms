@@ -376,7 +376,7 @@ def plot_feature_importances():
 # -- Post 0: Why Deconvolute plots --
 
 INTRO_DIR = Path("data/synthetic/blog_intro")
-SPEC_IDX_0, SPEC_IDX_1 = 0, 101  # 4-METHYL-2-PENTANONE, 3-OCTANONE
+SPEC_IDX_0, SPEC_IDX_1 = 72, 161  # ETHYLENE GLYCOL MONOACETATE, 3-METHYLTETRAHYDROFURAN
 
 
 def _load_intro_data():
@@ -413,9 +413,13 @@ def plot_intro_clean_example():
     # Components
     p_gt = figure(title="Two overlapping molecules (simplified — no noise)",
                   x_axis_label="Scan", y_axis_label="Intensity", width=900, height=250)
+    with open("data/spectra.json") as f:
+        spectra_lib = json.load(f)
+    name0 = spectra_lib[SPEC_IDX_0]["name"].title()
+    name1 = spectra_lib[SPEC_IDX_1]["name"].title()
     p_gt.line(scans, tic, color="black", line_width=2, line_alpha=0.3, legend_label="Combined TIC")
-    p_gt.line(scans, tic0, color=palette[0], line_width=2, legend_label="4-Methyl-2-pentanone")
-    p_gt.line(scans, tic1, color=palette[1], line_width=2, legend_label="3-Octanone")
+    p_gt.line(scans, tic0, color=palette[0], line_width=2, legend_label=name0)
+    p_gt.line(scans, tic1, color=palette[1], line_width=2, legend_label=name1)
     p_gt.legend.click_policy = "hide"
 
     # Ion traces
@@ -431,7 +435,7 @@ def plot_intro_clean_example():
     return column(p_gt, p_ions)
 
 
-def _cosine_search(query_vec, spectra_lib, top_n=10):
+def _cosine_search(query_vec, spectra_lib, top_n=5):
     """Search spectra library by cosine similarity, return top N matches."""
     results = []
     for i, spec in enumerate(spectra_lib):
