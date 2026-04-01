@@ -469,32 +469,28 @@ def plot_intro_nnls_example():
     ms, gt0, gt1, spectra_lib = _load_intro_data()
     profile0 = gt0.sum(axis=1)
     profile1 = gt1.sum(axis=1)
+    # Normalize profiles to peak=1 so weights are in intuitive intensity units
+    profile0_norm = profile0 / profile0.max()
+    profile1_norm = profile1 / profile1.max()
     scans = np.arange(ms.shape[0])
     palette = Category10[3]
 
-    # Find an ion present in both molecules with good signal
-    ref0 = _make_ref_vec(spectra_lib, SPEC_IDX_0)
-    ref1 = _make_ref_vec(spectra_lib, SPEC_IDX_1)
-    # m/z 43 is the base peak of 4-METHYL-2-PENTANONE and also present in 3-OCTANONE
-    mz = 43
+    mz = 42  # shared ion with balanced contributions from both molecules
     ion_signal = ms[:, mz]
-    ion_gt0 = gt0[:, mz]
-    ion_gt1 = gt1[:, mz]
 
-    # NNLS on this single ion
-    profiles = np.column_stack([profile0, profile1])
+    profiles = np.column_stack([profile0_norm, profile1_norm])
     w, _ = nnls(profiles, ion_signal)
-    fit0 = profile0 * w[0]
-    fit1 = profile1 * w[1]
+    fit0 = profile0_norm * w[0]
+    fit1 = profile1_norm * w[1]
 
     p = figure(title=f"NNLS on m/z {mz}: separating one ion into two components",
                x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300)
     p.line(scans, ion_signal, color="black", line_width=2, line_alpha=0.4,
            legend_label=f"Combined m/z {mz}")
     p.line(scans, fit0, color=palette[0], line_width=2,
-           legend_label=f"Molecule A contribution (w={w[0]:.2f})")
+           legend_label=f"Molecule A (w={w[0]:,.0f})")
     p.line(scans, fit1, color=palette[1], line_width=2,
-           legend_label=f"Molecule B contribution (w={w[1]:.2f})")
+           legend_label=f"Molecule B (w={w[1]:,.0f})")
     p.legend.click_policy = "hide"
     p.legend.location = "top_right"
 
@@ -760,21 +756,22 @@ in both molecules. The combined signal is a mix of both elution profiles:</p>
 <div class="plot">{d5}</div>
 {s5}
 
-<p>NNLS finds how much each elution profile contributes to the observed signal at this
-m/z channel. In code:</p>
+<p>NNLS finds the intensity of each molecule's contribution to this ion. In code:</p>
 
 <pre>from scipy.optimize import nnls
 
-# profiles: (num_scans, 2) — the two elution profiles as columns
+# profiles: (num_scans, 2) — the two elution profiles (normalized to peak=1)
 # ion_signal: (num_scans,) — the combined signal at m/z {nnls_mz}
 
 weights, _ = nnls(profiles, ion_signal)
-# weights = [{nnls_w[0]:.2f}, {nnls_w[1]:.2f}]
-# molecule A contributes {nnls_w[0]:.2f}, molecule B contributes {nnls_w[1]:.2f}</pre>
+# weights = [{nnls_w[0]:,.0f}, {nnls_w[1]:,.0f}]
+# → molecule A contributes {nnls_w[0]:,.0f} intensity at m/z {nnls_mz}
+# → molecule B contributes {nnls_w[1]:,.0f} intensity at m/z {nnls_mz}</pre>
 
-<p>The weight tells us how much of this ion belongs to each molecule. Now we simply
-repeat this for <em>every</em> m/z channel (0&ndash;300). The vector of weights across
-all m/z channels <em>is</em> the recovered spectrum for each molecule.</p>
+<p>Now we simply repeat this for <em>every</em> m/z channel (0&ndash;300). The vector
+of weights across all channels <em>is</em> the recovered mass spectrum for each molecule.
+As a bonus, these weights also give us <strong>quantification</strong> &mdash; we know
+exactly how much each molecule contributes to the signal.</p>
 
 <h2>5. The Payoff: Clean Spectra</h2>
 <p>Using the true elution profiles (which we know in this synthetic example), NNLS
