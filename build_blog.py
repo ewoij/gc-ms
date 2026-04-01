@@ -716,6 +716,10 @@ doesn't see these separately &mdash; it only records the combined signal (ion ch
 The question is: can we identify what's in there?</p>
 
 <h2>3. The Problem: Contaminated Spectra</h2>
+<p>These two molecules share 4 ions in common: <strong>m/z 29, 42, 43, 44</strong>.
+At any point in time where both are eluting, the instrument records the sum of both
+contributions at these m/z channels &mdash; there's no way to tell them apart just by
+looking at the raw signal.</p>
 <p>The standard approach to identify a molecule is to extract the mass spectrum at its
 peak apex and match it against a reference library. Let's try that:</p>
 
