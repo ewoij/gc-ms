@@ -82,13 +82,13 @@ def plot_real_sample():
                    y_axis_label="Intensity", width=900, height=250)
     p_tic.line(scans, tic)
 
-    detail_range = Range1d(start=5100, end=5350)
+    detail_range = Range1d(start=5140, end=5260)
     num_ions = ms.shape[1]
     colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
 
     p_ions = figure(title="Ion Traces — a peak cluster with multiple overlapping molecules",
                     x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
-                    x_range=detail_range)
+                    x_range=detail_range, y_range=Range1d(start=0, end=2.5e5))
     xs = [scans] * num_ions
     ys = [ms[:, i] for i in range(num_ions)]
     p_ions.multi_line(xs, ys, line_color=colors, line_alpha=0.8, line_width=0.7)
@@ -446,12 +446,18 @@ def _cosine_search(query_vec, spectra_lib, top_n=5):
     return results[:top_n]
 
 
-def _format_search_results(results):
-    """Format cosine search results as HTML table."""
-    rows = "".join(
-        f"<tr><td>{i+1}</td><td>{name}</td><td>{sim:.4f}</td></tr>"
-        for i, (sim, idx, name) in enumerate(results)
-    )
+def _format_search_results(results, correct_idx=None):
+    """Format cosine search results as HTML table, highlighting the correct molecule."""
+    rows_html = []
+    for i, (sim, idx, name) in enumerate(results):
+        if correct_idx is not None and idx == correct_idx:
+            style = ' style="background: #d4edda; font-weight: bold;"'
+            label = f"{name} &larr; correct"
+        else:
+            style = ""
+            label = name
+        rows_html.append(f"<tr{style}><td>{i+1}</td><td>{label}</td><td>{sim:.4f}</td></tr>")
+    rows = "".join(rows_html)
     return f"""<table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
 <tr style="border-bottom: 2px solid #ddd;"><th>#</th><th style="text-align: left;">Molecule</th><th>Cosine Similarity</th></tr>
 {rows}
@@ -666,8 +672,8 @@ def build_why_deconvolute_post():
     cont1 = ms[apex1, :]
     search_cont0 = _cosine_search(cont0, spectra_lib)
     search_cont1 = _cosine_search(cont1, spectra_lib)
-    table_cont0 = _format_search_results(search_cont0)
-    table_cont1 = _format_search_results(search_cont1)
+    table_cont0 = _format_search_results(search_cont0, correct_idx=SPEC_IDX_0)
+    table_cont1 = _format_search_results(search_cont1, correct_idx=SPEC_IDX_1)
 
     # Cosine search on recovered spectra
     profiles = np.column_stack([profile0, profile1])
@@ -678,8 +684,8 @@ def build_why_deconvolute_post():
         recovered[1, mz] = w[1]
     search_rec0 = _cosine_search(recovered[0], spectra_lib)
     search_rec1 = _cosine_search(recovered[1], spectra_lib)
-    table_rec0 = _format_search_results(search_rec0)
-    table_rec1 = _format_search_results(search_rec1)
+    table_rec0 = _format_search_results(search_rec0, correct_idx=SPEC_IDX_0)
+    table_rec1 = _format_search_results(search_rec1, correct_idx=SPEC_IDX_1)
 
     body = f"""
 <h1>Why Deconvolute?</h1>
@@ -693,9 +699,10 @@ scans &times; m/z channels. Here's a real run from the Copenhagen Soft Camel Che
 <div class="plot">{d1}</div>
 {s1}
 
-<p>Drag the selection box on the TIC to explore different regions. The ion traces below
-show hundreds of overlapping signals &mdash; this particular window contains a peak cluster
-where multiple molecules are eluting at the same time. This is extremely common in GC-MS.</p>
+<p>Drag the selection box on the TIC to explore different regions. The default window
+shows a peak cluster where at least two molecules are visibly overlapping &mdash; you can
+see multiple distinct ion traces rising and falling at slightly different times. This
+kind of coelution is extremely common in GC-MS.</p>
 
 <h2>2. A Simplified Example</h2>
 <p>Let's look at what happens when two molecules coelute. Here's a clean, synthetic example
@@ -728,9 +735,10 @@ the other molecule's signal.</p>
 <h3>Library search at apex of molecule B (scan {apex1}):</h3>
 {table_cont1}
 
-<p>The correct molecule still shows up as the top match, but the scores are lower than
-they should be, and the rankings could easily flip with more overlap or noisier data.
-This is where things go wrong in real-world analysis.</p>
+<p>Look at molecule A: the correct molecule (highlighted in green) ranks <strong>#5</strong>,
+not #1. Without deconvolution, we would identify this as Butyl Acetate &mdash; the
+<em>wrong molecule</em>. Molecule B fares slightly better at #2, but is still at risk
+of being misidentified. In a real analysis, these errors propagate silently.</p>
 
 <h2>4. The Solution: Deconvolution</h2>
 <p>Deconvolution is the process of separating the mixed signal back into its individual
@@ -782,6 +790,11 @@ search again on the deconvoluted spectra:</p>
 
 <p>Perfect matches &mdash; cosine similarity of 1.0000. The molecules are now correctly
 identified with no ambiguity.</p>
+
+<p>And identification isn't the only benefit. Deconvolution also enables
+<strong>quantification</strong>: the NNLS weights tell us exactly how much each molecule
+contributes to the combined signal. We don't just know <em>what's</em> in the peak &mdash;
+we know <em>how much</em> of each molecule is there.</p>
 
 <h2>6. The Challenge Ahead</h2>
 <p>Of course, in practice we <em>don't know</em> the elution profiles &mdash; that's the
