@@ -82,12 +82,12 @@ def plot_real_sample():
                    y_axis_label="Intensity", width=900, height=250)
     p_tic.line(scans, tic)
 
-    detail_range = Range1d(start=0, end=200)
+    detail_range = Range1d(start=5100, end=5350)
     num_ions = ms.shape[1]
     colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
 
-    p_ions = figure(title="Ion Traces (200-scan window)", x_axis_label="Scan",
-                    y_axis_label="Intensity", width=900, height=300,
+    p_ions = figure(title="Ion Traces — a peak cluster with multiple overlapping molecules",
+                    x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
                     x_range=detail_range)
     xs = [scans] * num_ions
     ys = [ms[:, i] for i in range(num_ions)]
@@ -431,6 +431,66 @@ def plot_intro_clean_example():
     return column(p_gt, p_ions)
 
 
+def _cosine_search(query_vec, spectra_lib, top_n=10):
+    """Search spectra library by cosine similarity, return top N matches."""
+    results = []
+    for i, spec in enumerate(spectra_lib):
+        ref = _make_ref_vec(spectra_lib, i)
+        sim = _cos_sim(query_vec, ref)
+        results.append((sim, i, spec.get("name", f"Spectrum {i}")))
+    results.sort(key=lambda x: -x[0])
+    return results[:top_n]
+
+
+def _format_search_results(results):
+    """Format cosine search results as HTML table."""
+    rows = "".join(
+        f"<tr><td>{i+1}</td><td>{name}</td><td>{sim:.4f}</td></tr>"
+        for i, (sim, idx, name) in enumerate(results)
+    )
+    return f"""<table style="width: 100%; border-collapse: collapse; font-size: 0.9em;">
+<tr style="border-bottom: 2px solid #ddd;"><th>#</th><th style="text-align: left;">Molecule</th><th>Cosine Similarity</th></tr>
+{rows}
+</table>"""
+
+
+def plot_intro_nnls_example():
+    """Show NNLS on a single ion shared by both molecules."""
+    ms, gt0, gt1, spectra_lib = _load_intro_data()
+    profile0 = gt0.sum(axis=1)
+    profile1 = gt1.sum(axis=1)
+    scans = np.arange(ms.shape[0])
+    palette = Category10[3]
+
+    # Find an ion present in both molecules with good signal
+    ref0 = _make_ref_vec(spectra_lib, SPEC_IDX_0)
+    ref1 = _make_ref_vec(spectra_lib, SPEC_IDX_1)
+    # m/z 43 is the base peak of 4-METHYL-2-PENTANONE and also present in 3-OCTANONE
+    mz = 43
+    ion_signal = ms[:, mz]
+    ion_gt0 = gt0[:, mz]
+    ion_gt1 = gt1[:, mz]
+
+    # NNLS on this single ion
+    profiles = np.column_stack([profile0, profile1])
+    w, _ = nnls(profiles, ion_signal)
+    fit0 = profile0 * w[0]
+    fit1 = profile1 * w[1]
+
+    p = figure(title=f"NNLS on m/z {mz}: separating one ion into two components",
+               x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300)
+    p.line(scans, ion_signal, color="black", line_width=2, line_alpha=0.4,
+           legend_label=f"Combined m/z {mz}")
+    p.line(scans, fit0, color=palette[0], line_width=2,
+           legend_label=f"Molecule A contribution (w={w[0]:.2f})")
+    p.line(scans, fit1, color=palette[1], line_width=2,
+           legend_label=f"Molecule B contribution (w={w[1]:.2f})")
+    p.legend.click_policy = "hide"
+    p.legend.location = "top_right"
+
+    return p, mz, w
+
+
 def plot_intro_contaminated_spectra():
     ms, gt0, gt1, spectra_lib = _load_intro_data()
     profile0 = gt0.sum(axis=1)
@@ -583,12 +643,39 @@ def build_why_deconvolute_post():
     p1 = plot_real_sample()
     p2 = plot_intro_clean_example()
     p3 = plot_intro_contaminated_spectra()
+    p5_nnls, nnls_mz, nnls_w = plot_intro_nnls_example()
     p4 = plot_intro_separated_spectra()
 
     s1, d1 = components(p1)
     s2, d2 = components(p2)
     s3, d3 = components(p3)
+    s5, d5 = components(p5_nnls)
     s4, d4 = components(p4)
+
+    # Cosine search on contaminated spectra
+    ms, gt0, gt1, spectra_lib = _load_intro_data()
+    profile0 = gt0.sum(axis=1)
+    profile1 = gt1.sum(axis=1)
+    apex0 = int(np.argmax(profile0))
+    apex1 = int(np.argmax(profile1))
+    cont0 = ms[apex0, :]
+    cont1 = ms[apex1, :]
+    search_cont0 = _cosine_search(cont0, spectra_lib)
+    search_cont1 = _cosine_search(cont1, spectra_lib)
+    table_cont0 = _format_search_results(search_cont0)
+    table_cont1 = _format_search_results(search_cont1)
+
+    # Cosine search on recovered spectra
+    profiles = np.column_stack([profile0, profile1])
+    recovered = np.zeros((2, 301))
+    for mz in range(301):
+        w, _ = nnls(profiles, ms[:, mz])
+        recovered[0, mz] = w[0]
+        recovered[1, mz] = w[1]
+    search_rec0 = _cosine_search(recovered[0], spectra_lib)
+    search_rec1 = _cosine_search(recovered[1], spectra_lib)
+    table_rec0 = _format_search_results(search_rec0)
+    table_rec1 = _format_search_results(search_rec1)
 
     body = f"""
 <h1>Why Deconvolute?</h1>
@@ -602,9 +689,9 @@ scans &times; m/z channels. Here's a real run from the Copenhagen Soft Camel Che
 <div class="plot">{d1}</div>
 {s1}
 
-<p>Each bump in the TIC represents one or more molecules eluting. In an ideal world,
-each molecule would elute at a unique time and we could simply read off its spectrum.
-But in practice, molecules overlap constantly.</p>
+<p>Drag the selection box on the TIC to explore different regions. The ion traces below
+show hundreds of overlapping signals &mdash; this particular window contains a peak cluster
+where multiple molecules are eluting at the same time. This is extremely common in GC-MS.</p>
 
 <h2>2. A Simplified Example</h2>
 <p>Let's look at what happens when two molecules coelute. Here's a clean, synthetic example
@@ -627,9 +714,19 @@ peak apex and match it against a reference library. Let's try that:</p>
 <p>The left column shows the pure reference spectra from our library. The right column
 shows what we actually extract from the combined signal at each apex scan. They look
 similar but not identical &mdash; each extracted spectrum is <em>contaminated</em> by
-the other molecule's signal. The cosine similarity drops below 1.0, which means library
-matching becomes less reliable. With more overlap or more similar molecules, this gets
-much worse.</p>
+the other molecule's signal.</p>
+
+<p>What happens when we search our library of 9,971 spectra for the best match?</p>
+
+<h3>Library search at apex of molecule A (scan {apex0}):</h3>
+{table_cont0}
+
+<h3>Library search at apex of molecule B (scan {apex1}):</h3>
+{table_cont1}
+
+<p>The correct molecule still shows up as the top match, but the scores are lower than
+they should be, and the rankings could easily flip with more overlap or noisier data.
+This is where things go wrong in real-world analysis.</p>
 
 <h2>4. The Solution: Deconvolution</h2>
 <p>Deconvolution is the process of separating the mixed signal back into its individual
@@ -638,21 +735,49 @@ components. The key idea:</p>
   <li><strong>Recover the elution profiles</strong> &mdash; figure out how each molecule's
       signal varies over time</li>
   <li><strong>Separate the matrix</strong> &mdash; using the elution profiles, solve for each
-      molecule's pure spectrum via non-negative least squares (NNLS)</li>
+      molecule's pure spectrum via NNLS (non-negative least squares)</li>
 </ol>
-<p>For each m/z channel, we solve: <code>signal = w&sub1; &middot; profile&sub1; + w&sub2; &middot; profile&sub2;</code>.
-The weights <code>w</code> give us each molecule's contribution at that m/z &mdash; which is
-exactly the recovered spectrum.</p>
+
+<p>Let's see how NNLS works on a single ion. Take m/z {nnls_mz} &mdash; it's present
+in both molecules. The combined signal is a mix of both elution profiles:</p>
+
+<div class="plot">{d5}</div>
+{s5}
+
+<p>NNLS finds how much each elution profile contributes to the observed signal at this
+m/z channel. In code:</p>
+
+<pre>from scipy.optimize import nnls
+
+# profiles: (num_scans, 2) — the two elution profiles as columns
+# ion_signal: (num_scans,) — the combined signal at m/z {nnls_mz}
+
+weights, _ = nnls(profiles, ion_signal)
+# weights = [{nnls_w[0]:.2f}, {nnls_w[1]:.2f}]
+# molecule A contributes {nnls_w[0]:.2f}, molecule B contributes {nnls_w[1]:.2f}</pre>
+
+<p>The weight tells us how much of this ion belongs to each molecule. Now we simply
+repeat this for <em>every</em> m/z channel (0&ndash;300). The vector of weights across
+all m/z channels <em>is</em> the recovered spectrum for each molecule.</p>
 
 <h2>5. The Payoff: Clean Spectra</h2>
-<p>If we use the true elution profiles (which we know in this synthetic example), NNLS
+<p>Using the true elution profiles (which we know in this synthetic example), NNLS
 perfectly separates the mixed signal:</p>
 
 <div class="plot">{d4}</div>
 {s4}
 
-<p>The recovered spectra match the reference <em>perfectly</em> &mdash; cosine similarity
-of 1.0000. Library matching now works flawlessly.</p>
+<p>The recovered spectra match the reference <em>perfectly</em>. Let's run the library
+search again on the deconvoluted spectra:</p>
+
+<h3>Library search on recovered spectrum A:</h3>
+{table_rec0}
+
+<h3>Library search on recovered spectrum B:</h3>
+{table_rec1}
+
+<p>Perfect matches &mdash; cosine similarity of 1.0000. The molecules are now correctly
+identified with no ambiguity.</p>
 
 <h2>6. The Challenge Ahead</h2>
 <p>Of course, in practice we <em>don't know</em> the elution profiles &mdash; that's the
