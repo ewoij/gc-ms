@@ -1059,7 +1059,7 @@ borderline cases.</p>
 always 1 (after normalization), s[1] is almost always high, and the late values are
 mostly noise. The discriminative signal lives in the transition zone.</p>
 
-<h2>5. Try It</h2>
+<h2>5. How Does That Look in Code?</h2>
 <pre>from tools.estimate_components import estimate_components
 import numpy as np
 
