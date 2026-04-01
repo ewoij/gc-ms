@@ -461,7 +461,7 @@ def plot_intro_clean_example():
     """)
     checkbox.js_on_change("active", callback)
 
-    return column(p_gt, checkbox, p_ions)
+    return column(p_gt, p_ions, checkbox)
 
 
 def _cosine_search(query_vec, spectra_lib, top_n=5):
