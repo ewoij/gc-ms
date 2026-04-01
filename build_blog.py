@@ -9,7 +9,7 @@ import joblib
 import numpy as np
 from bokeh.embed import components
 from bokeh.layouts import column, gridplot, row
-from bokeh.models import Range1d, RangeTool
+from bokeh.models import CheckboxGroup, CustomJS, Range1d, RangeTool
 from bokeh.palettes import Category10, TolRainbow, Turbo256, Viridis256
 from bokeh.plotting import figure
 from bokeh.resources import CDN
@@ -422,17 +422,46 @@ def plot_intro_clean_example():
     p_gt.line(scans, tic1, color=palette[1], line_width=2, legend_label=name1)
     p_gt.legend.click_policy = "hide"
 
-    # Ion traces
+    # Find common ions
+    mzs_a = set(p[0] for p in spectra_lib[SPEC_IDX_0]["peaks"])
+    mzs_b = set(p[0] for p in spectra_lib[SPEC_IDX_1]["peaks"])
+    common_mzs = mzs_a & mzs_b
+
+    # Ion traces — all ions
     num_ions = ms.shape[1]
-    ion_colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
-    p_ions = figure(title="All ion channels — what the instrument actually records",
+    p_ions = figure(title="Ion channels — what the instrument actually records",
                     x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
                     x_range=p_gt.x_range)
-    xs = [scans] * num_ions
-    ys = [ms[:, i] for i in range(num_ions)]
-    p_ions.multi_line(xs, ys, line_color=ion_colors, line_alpha=0.8, line_width=0.7)
 
-    return column(p_gt, p_ions)
+    all_renderers = []
+    common_renderers = []
+    for i in range(num_ions):
+        if ms[:, i].max() == 0:
+            continue
+        color = TolRainbow[23][i % 23]
+        is_common = i in common_mzs
+        r = p_ions.line(scans, ms[:, i], line_color=color,
+                        line_alpha=0.8, line_width=0.7)
+        all_renderers.append(r)
+        if is_common:
+            common_renderers.append(r)
+
+    # Checkbox to toggle all vs common
+    checkbox = CheckboxGroup(labels=["Show only common ions (m/z 29, 42, 43, 44)"], active=[])
+    callback = CustomJS(args=dict(all_r=all_renderers, common_r=common_renderers, cb=checkbox), code="""
+        const show_common_only = cb.active.includes(0);
+        for (const r of all_r) {
+            r.visible = !show_common_only;
+        }
+        if (show_common_only) {
+            for (const r of common_r) {
+                r.visible = true;
+            }
+        }
+    """)
+    checkbox.js_on_change("active", callback)
+
+    return column(p_gt, checkbox, p_ions)
 
 
 def _cosine_search(query_vec, spectra_lib, top_n=5):
