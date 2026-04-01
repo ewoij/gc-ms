@@ -14,7 +14,7 @@ from bokeh.palettes import Category10, TolRainbow, Turbo256, Viridis256
 from bokeh.plotting import figure
 from bokeh.resources import CDN
 from scipy.interpolate import interp1d
-from scipy.optimize import nnls
+from scipy.optimize import linear_sum_assignment, nnls
 
 
 # -- Shared HTML --
@@ -627,6 +627,270 @@ def plot_intro_separated_spectra():
     return gridplot([[p0_ref, p0_rec], [p1_ref, p1_rec]], merge_tools=False)
 
 
+# -- Post 3: MCR-ALS plots --
+
+MCR_DIR = Path("data/synthetic_peaks_mcr")
+MCR_BENCH = MCR_DIR / "benchmark"
+
+
+def _mcr_load_sample(sid):
+    ms = np.load(MCR_DIR / sid / "ms.npy")
+    gt_files = sorted((MCR_DIR / sid / "ground_truth").glob("*.npy"), key=lambda p: int(p.stem))
+    C = np.load(MCR_BENCH / sid / "C.npy")
+    S = np.load(MCR_BENCH / sid / "S.npy")
+    true_profiles = []
+    true_spectra = []
+    for gt_path in gt_files:
+        gt = np.load(gt_path)
+        prof = gt.sum(axis=1)
+        true_profiles.append(prof)
+        true_spectra.append(gt[np.argmax(prof), :])
+    return ms, C, S, true_profiles, true_spectra
+
+
+def _mcr_match(C, S, true_profiles, true_spectra):
+    nc = len(true_profiles)
+    sim = np.zeros((nc, nc))
+    for i in range(nc):
+        for j in range(nc):
+            sim[i, j] = _cos_sim(S[i], true_spectra[j])
+    ri, ci = linear_sum_assignment(-sim)
+    return sim, {r: c for r, c in zip(ri, ci)}
+
+
+def plot_mcr_good_example():
+    sid = "0364"
+    ms, C, S, true_profiles, true_spectra = _mcr_load_sample(sid)
+    nc = len(true_profiles)
+    sim, matching = _mcr_match(C, S, true_profiles, true_spectra)
+    scans = np.arange(ms.shape[0])
+    palette = Category10[max(nc, 3)]
+
+    # TIC
+    p_tic = figure(title=f"Sample {sid} — TIC ({nc} components)",
+                   x_axis_label="Scan", y_axis_label="Intensity", width=900, height=200)
+    p_tic.line(scans, ms.sum(axis=1), line_width=2)
+
+    # True vs recovered profiles
+    p_prof = figure(title="True (dashed) vs Recovered (solid) Elution Profiles",
+                    x_axis_label="Scan", y_axis_label="Normalized", width=900, height=300,
+                    x_range=p_tic.x_range)
+    for r_idx in range(nc):
+        t_idx = matching[r_idx]
+        color = palette[t_idx % len(palette)]
+        # Normalize both to peak=1
+        true_n = true_profiles[t_idx] / true_profiles[t_idx].max()
+        rec_n = C[:, r_idx] / C[:, r_idx].max() if C[:, r_idx].max() > 0 else C[:, r_idx]
+        p_prof.line(scans, true_n, color=color, line_width=2, line_dash="dashed",
+                    legend_label=f"True {t_idx}")
+        p_prof.line(scans, rec_n, color=color, line_width=2,
+                    legend_label=f"Recovered → {t_idx} (cos={sim[r_idx, t_idx]:.4f})")
+    p_prof.legend.click_policy = "hide"
+    p_prof.legend.location = "top_right"
+
+    # Spectra comparison (first 4)
+    spec_plots = []
+    for r_idx in range(min(nc, 4)):
+        t_idx = matching[r_idx]
+        color = palette[t_idx % len(palette)]
+        true_s = true_spectra[t_idx]
+        rec_s = S[r_idx]
+        true_norm = true_s / true_s.max() if true_s.max() > 0 else true_s
+        rec_norm = rec_s / rec_s.max() if rec_s.max() > 0 else rec_s
+
+        p_t = figure(title=f"True spectrum {t_idx}", width=420, height=200)
+        p_t.vbar(x=np.arange(301), top=true_norm, width=0.8, color=color, alpha=0.7)
+        p_t.title.text_font_size = "9pt"
+
+        p_r = figure(title=f"Recovered (cos={sim[r_idx, t_idx]:.4f})",
+                     width=420, height=200, x_range=p_t.x_range)
+        p_r.vbar(x=np.arange(301), top=rec_norm, width=0.8, color=color, alpha=0.7)
+        p_r.title.text_font_size = "9pt"
+        spec_plots.append([p_t, p_r])
+
+    # Similarity matrix
+    labels = [str(i) for i in range(nc)]
+    xs, ys, vals, colors_list = [], [], [], []
+    for i in range(nc):
+        for j in range(nc):
+            xs.append(str(j))
+            ys.append(str(nc - 1 - i))
+            vals.append(f"{sim[i, j]:.2f}")
+            colors_list.append(Viridis256[int(sim[i, j] * 255)])
+    p_sim = figure(title="Cosine Similarity (recovered x true)",
+                   x_axis_label="True", y_axis_label="Recovered",
+                   width=350, height=350,
+                   x_range=labels, y_range=labels)
+    p_sim.rect(x=xs, y=ys, width=1, height=1, color=colors_list, line_color="white")
+    p_sim.text(x=xs, y=ys, text=vals, text_align="center", text_baseline="middle",
+               text_font_size="10pt", text_color="white")
+
+    return column(p_tic, p_prof, gridplot(spec_plots, merge_tools=False), p_sim)
+
+
+def plot_mcr_benchmark_histograms():
+    with open(MCR_BENCH / "summary.json") as f:
+        summary = json.load(f)
+    with open(MCR_BENCH / "results.csv") as f:
+        rows = list(csv.DictReader(f))
+
+    spec_scores = [float(r["avg_spectra_cos"]) for r in rows]
+    prof_scores = [float(r["avg_profile_cos"]) for r in rows]
+
+    p_spec = figure(title="Spectra Recovery — Cosine Similarity Distribution",
+                    x_axis_label="Cosine Similarity", y_axis_label="Count",
+                    width=900, height=250)
+    hist, edges = np.histogram(spec_scores, bins=50, range=(min(0.7, min(spec_scores)), 1.0))
+    p_spec.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
+
+    p_prof = figure(title="Profile Recovery — Cosine Similarity Distribution",
+                    x_axis_label="Cosine Similarity", y_axis_label="Count",
+                    width=900, height=250)
+    hist, edges = np.histogram(prof_scores, bins=50, range=(min(0.7, min(prof_scores)), 1.0))
+    p_prof.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
+
+    # By component count
+    by_count = summary["by_component_count"]
+    counts = sorted(by_count.keys(), key=int)
+    spec_meds = [by_count[c]["spectra_median"] for c in counts]
+    prof_meds = [by_count[c]["profile_median"] for c in counts]
+    counts_int = [int(c) for c in counts]
+
+    p_by = figure(title="Median Cosine by Component Count",
+                  x_axis_label="Components", y_axis_label="Median Cosine",
+                  width=900, height=250)
+    p_by.line(counts_int, spec_meds, line_width=2, legend_label="Spectra", color="#1f77b4")
+    p_by.scatter(counts_int, spec_meds, size=8, color="#1f77b4")
+    p_by.line(counts_int, prof_meds, line_width=2, legend_label="Profiles", color="#ff7f0e")
+    p_by.scatter(counts_int, prof_meds, size=8, color="#ff7f0e")
+    p_by.legend.location = "bottom_left"
+
+    return column(p_spec, p_prof, p_by)
+
+
+def plot_mcr_examples_grid():
+    """Grid of 12 samples showing true (dashed) vs recovered (solid) profiles."""
+    with open(MCR_BENCH / "results.csv") as f:
+        rows = list(csv.DictReader(f))
+    # Pick mix: 4 best, 4 medium, 4 worst
+    sorted_rows = sorted(rows, key=lambda r: float(r["avg_spectra_cos"]))
+    picks = sorted_rows[:4] + sorted_rows[len(sorted_rows)//2-2:len(sorted_rows)//2+2] + sorted_rows[-4:]
+
+    plots = []
+    for row in picks:
+        sid = row["sample_id"]
+        nc = int(row["num_components"])
+        cos_score = float(row["avg_spectra_cos"])
+        ms, C, S, true_profiles, true_spectra = _mcr_load_sample(sid)
+        sim, matching = _mcr_match(C, S, true_profiles, true_spectra)
+        scans = np.arange(ms.shape[0])
+        palette = Category10[max(nc, 3)]
+
+        p = figure(title=f"{sid} ({nc}c, cos={cos_score:.3f})", width=280, height=200)
+        for r_idx in range(nc):
+            t_idx = matching.get(r_idx, r_idx)
+            color = palette[t_idx % len(palette)]
+            true_n = true_profiles[t_idx] / true_profiles[t_idx].max()
+            rec_n = C[:, r_idx] / C[:, r_idx].max() if C[:, r_idx].max() > 0 else C[:, r_idx]
+            p.line(scans, true_n, color=color, line_dash="dashed", line_alpha=0.5, line_width=1.5)
+            p.line(scans, rec_n, color=color, line_width=1.5)
+        p.title.text_font_size = "9pt"
+        plots.append(p)
+
+    return gridplot([plots[i:i+4] for i in range(0, len(plots), 4)], merge_tools=False)
+
+
+def plot_mcr_worst_example():
+    sid = "0887"
+    ms, C, S, true_profiles, true_spectra = _mcr_load_sample(sid)
+    nc = len(true_profiles)
+    sim, matching = _mcr_match(C, S, true_profiles, true_spectra)
+    scans = np.arange(ms.shape[0])
+    palette = Category10[max(nc, 3)]
+
+    p_tic = figure(title=f"Worst sample {sid} — TIC ({nc} components)",
+                   x_axis_label="Scan", y_axis_label="Intensity", width=900, height=200)
+    p_tic.line(scans, ms.sum(axis=1), line_width=2)
+
+    p_prof = figure(title="True (dashed) vs Recovered (solid)",
+                    x_axis_label="Scan", y_axis_label="Normalized", width=900, height=300,
+                    x_range=p_tic.x_range)
+    for r_idx in range(nc):
+        t_idx = matching.get(r_idx, r_idx)
+        color = palette[t_idx % len(palette)]
+        true_n = true_profiles[t_idx] / true_profiles[t_idx].max()
+        rec_n = C[:, r_idx] / C[:, r_idx].max() if C[:, r_idx].max() > 0 else C[:, r_idx]
+        p_prof.line(scans, true_n, color=color, line_dash="dashed", line_width=2, line_alpha=0.5)
+        p_prof.line(scans, rec_n, color=color, line_width=2)
+    p_prof.legend.click_policy = "hide"
+
+    return column(p_tic, p_prof)
+
+
+def plot_mcr_scale_ambiguity():
+    """Show per-component TIC mismatch due to scale ambiguity."""
+    sid = "0006"
+    ms, C, S, true_profiles, true_spectra = _mcr_load_sample(sid)
+    nc = len(true_profiles)
+    sim, matching = _mcr_match(C, S, true_profiles, true_spectra)
+    scans = np.arange(ms.shape[0])
+    palette = Category10[max(nc, 3)]
+
+    # Before fix: per-component TIC
+    p_before = figure(title=f"Per-component TIC — before NNLS fix (sample {sid})",
+                      x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300)
+    for r_idx in range(nc):
+        t_idx = matching.get(r_idx, r_idx)
+        color = palette[t_idx % len(palette)]
+        true_tic = true_profiles[t_idx]
+        rec_tic = C[:, r_idx] * S[r_idx].sum()
+        p_before.line(scans, true_tic, color=color, line_dash="dashed", line_width=2, line_alpha=0.5,
+                      legend_label=f"True {t_idx}")
+        p_before.line(scans, rec_tic, color=color, line_width=2,
+                      legend_label=f"Recovered {t_idx}")
+    p_before.legend.click_policy = "hide"
+    p_before.legend.location = "top_right"
+
+    # After NNLS fix
+    # Normalize profiles to peak=1, then NNLS for correct spectra
+    C_norm = C.copy()
+    for i in range(nc):
+        mx = C_norm[:, i].max()
+        if mx > 0:
+            C_norm[:, i] /= mx
+
+    S_nnls = np.zeros_like(S)
+    for mz in range(ms.shape[1]):
+        w, _ = nnls(C_norm, ms[:, mz])
+        for i in range(nc):
+            S_nnls[i, mz] = w[i]
+
+    p_after = figure(title=f"Per-component TIC — after NNLS fix",
+                     x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
+                     x_range=p_before.x_range)
+    # Re-match after NNLS
+    sim2 = np.zeros((nc, nc))
+    for i in range(nc):
+        for j in range(nc):
+            sim2[i, j] = _cos_sim(S_nnls[i], true_spectra[j])
+    ri2, ci2 = linear_sum_assignment(-sim2)
+    matching2 = {r: c for r, c in zip(ri2, ci2)}
+
+    for r_idx in range(nc):
+        t_idx = matching2.get(r_idx, r_idx)
+        color = palette[t_idx % len(palette)]
+        true_tic = true_profiles[t_idx]
+        rec_tic = C_norm[:, r_idx] * S_nnls[r_idx].sum()
+        p_after.line(scans, true_tic, color=color, line_dash="dashed", line_width=2, line_alpha=0.5,
+                     legend_label=f"True {t_idx}")
+        p_after.line(scans, rec_tic, color=color, line_width=2,
+                     legend_label=f"NNLS {t_idx}")
+    p_after.legend.click_policy = "hide"
+    p_after.legend.location = "top_right"
+
+    return column(p_before, p_after)
+
+
 # -- Build all pages --
 
 def build_index():
@@ -649,9 +913,9 @@ def build_index():
     <a href="posts/estimator.html">Part 2: Counting Components with SVD</a>
     <p>Using singular value decomposition and a random forest to estimate overlapping molecule count — 98.5% accuracy.</p>
   </li>
-  <li style="opacity: 0.5;">
-    <span style="font-size: 1.2em; font-weight: 600;">Part 3: Recovering Elution Profiles</span>
-    <p>Upcoming</p>
+  <li>
+    <a href="posts/mcr-als.html">Part 3: Recovering Elution Profiles with MCR-ALS</a>
+    <p>Alternating least squares to recover profile shapes, benchmark on 1,000 samples, and the scale ambiguity problem.</p>
   </li>
   <li style="opacity: 0.5;">
     <span style="font-size: 1.2em; font-weight: 600;">Part 4: Deconvoluting Real Peaks</span>
@@ -1094,6 +1358,157 @@ elution profile and mass spectrum from the mixed signal.</p>
     print("-> posts/estimator.html")
 
 
+def build_mcr_als_post():
+    p1 = plot_mcr_good_example()
+    p2 = plot_mcr_benchmark_histograms()
+    p3 = plot_mcr_examples_grid()
+    p4 = plot_mcr_worst_example()
+    p5 = plot_mcr_scale_ambiguity()
+
+    s1, d1 = components(p1)
+    s2, d2 = components(p2)
+    s3, d3 = components(p3)
+    s4, d4 = components(p4)
+    s5, d5 = components(p5)
+
+    # Read MCR code for display
+    mcr_code = Path("gcms/mcr.py").read_text()
+
+    body = f"""
+<h1>Recovering Elution Profiles with MCR-ALS</h1>
+<p class="subtitle">Alternating least squares to separate overlapping GC-MS peaks</p>
+
+<h2>1. The Pipeline So Far</h2>
+<p>In <a href="why-deconvolute.html">Part 0</a> we saw why deconvolution matters &mdash;
+overlapping molecules contaminate each other's spectra and break library identification.
+In <a href="estimator.html">Part 2</a> we trained a model to estimate how many components
+are present (98.5% accuracy). Now comes the hard part: actually recovering the elution
+profiles and spectra.</p>
+
+<h2>2. MCR-ALS in a Nutshell</h2>
+<p>MCR-ALS (Multivariate Curve Resolution &ndash; Alternating Least Squares) is a well-established
+method for resolving mixtures. For a thorough introduction, see
+<a href="https://doi.org/10.1039/c4ay00571f">de Juan, Jaumot &amp; Tauler (2014)</a>.</p>
+<p>The idea is simple: we want to factor the intensity matrix <code>M</code> (scans &times; m/z)
+into two parts:</p>
+<pre>M &asymp; C @ S</pre>
+<p>where <code>C</code> is the elution profiles (scans &times; n_components) and <code>S</code>
+is the mass spectra (n_components &times; m/z). We solve this by alternating:</p>
+<ol>
+  <li>Fix S, solve for C &mdash; <code>C = M @ S.T @ inv(S @ S.T)</code></li>
+  <li>Apply constraints: clip negatives, enforce unimodality (one peak per profile)</li>
+  <li>Fix C, solve for S &mdash; <code>S = inv(C.T @ C) @ C.T @ M</code></li>
+  <li>Clip negatives</li>
+  <li>Check convergence, repeat</li>
+</ol>
+<p>The initial guess comes from SVD. A key optimization: instead of calling NNLS per
+m/z column (slow), we solve the entire matrix at once and clip negatives. Not
+mathematically identical to true NNLS, but within ALS the alternation corrects the
+clipping errors.</p>
+
+<details>
+<summary>Full implementation (~70 lines)</summary>
+<pre>{mcr_code}</pre>
+</details>
+
+<h2>3. A Concrete Example</h2>
+<p>Let's run MCR-ALS on a synthetic sample with 4 overlapping molecules. Dashed lines
+are the true profiles, solid lines are what MCR-ALS recovered:</p>
+
+<div class="plot">{d1}</div>
+{s1}
+
+<p>The shapes match nearly perfectly. The similarity matrix shows each recovered component
+mapping cleanly to one true component, with cosine similarities &gt; 0.999.</p>
+
+<h2>4. How We Measure Accuracy</h2>
+<p>The benchmark works like this:</p>
+<ol>
+  <li>We give MCR-ALS the <strong>correct</strong> number of components &mdash; we're testing
+      MCR-ALS in isolation, not the full pipeline</li>
+  <li>MCR-ALS returns N recovered profiles + N recovered spectra</li>
+  <li>Problem: the recovered components are unordered &mdash; recovered component 0 might
+      correspond to true component 3</li>
+  <li>We compute the cosine similarity between every pair (recovered &times; true) and use
+      the <strong>Hungarian algorithm</strong> to find the optimal one-to-one assignment</li>
+  <li>Each matched pair gets a cosine similarity score. We average across components per sample</li>
+</ol>
+
+<h2>5. Benchmark: 1,000 Samples</h2>
+<p>We generated a fresh dataset of 1,000 synthetic samples (different random seed from the
+component estimator's training data) with 1&ndash;10 components each &mdash; 5,433 components total.</p>
+
+<div class="stat">
+  Spectra recovery &mdash; Median cosine: <strong>0.9999</strong> (P5: 0.9895)<br>
+  Profile recovery &mdash; Median cosine: <strong>1.0000</strong> (P5: 0.9891)
+</div>
+
+<div class="plot">{d2}</div>
+{s2}
+
+<p>Here's a grid of 12 samples &mdash; the 4 worst, 4 medium, and 4 best. Dashed = true,
+solid = recovered:</p>
+
+<div class="plot">{d3}</div>
+{s3}
+
+<h2>6. When It Fails</h2>
+<p>The worst sample in the dataset (0887, 9 components) scored 0.78 &mdash; still recovers
+most profiles correctly, but some components get confused. Likely caused by highly similar
+spectra or extreme overlap where the algorithm can't distinguish between components:</p>
+
+<div class="plot">{d4}</div>
+{s4}
+
+<h2>7. The Scale Ambiguity Problem</h2>
+<p>Here's something we discovered while investigating the results. The cosine similarity
+says 0.9999 &mdash; near perfect. But when we looked at the actual <em>intensity</em> of
+each recovered component, something was off. The per-component TICs didn't match at all:</p>
+
+<div class="plot">{d5}</div>
+{s5}
+
+<p>The top plot shows MCR-ALS output directly &mdash; the shapes are right but the amplitudes
+are completely wrong. Some components are 6x too large, others 6x too small.</p>
+<p>This is a <strong>known limitation</strong> of MCR-ALS called <em>scale ambiguity</em>:
+for each component, you can multiply the profile by any factor <code>k</code> and divide
+the spectrum by <code>k</code>, and the product <code>C @ S</code> stays identical. The
+algorithm has no way to know how to distribute the scale between C and S.</p>
+<p>Cosine similarity was hiding this because it only measures shape, not magnitude.</p>
+
+<h2>8. The Fix: NNLS to the Rescue</h2>
+<p>The fix is straightforward: use MCR-ALS for what it's good at (recovering <em>shapes</em>),
+then use NNLS to get the correct amplitudes. Normalize the recovered profiles to peak=1,
+then solve each m/z channel independently:</p>
+<pre>for mz in range(301):
+    weights, _ = nnls(C_normalized, ms[:, mz])</pre>
+<p>The bottom plot above shows the result &mdash; after NNLS, the per-component TICs match
+correctly. This is exactly the same technique we demonstrated in
+<a href="why-deconvolute.html">Part 0</a>.</p>
+<p>The full pipeline becomes: <strong>SVD</strong> (count components) &rarr; <strong>MCR-ALS</strong>
+(recover profile shapes) &rarr; <strong>NNLS</strong> (recover spectra at correct scale).</p>
+
+<h2>9. What's Next</h2>
+<p>These results on synthetic data are encouraging &mdash; MCR-ALS recovers profile shapes
+nearly perfectly, and NNLS fixes the scale. But synthetic data is clean and well-behaved.
+The real test is <a href="#">Part 4</a>: running this pipeline on actual GC-MS data from the
+Copenhagen Soft Camel Cheese dataset.</p>
+
+<p><a href="estimator.html">&larr; Part 2: Counting Components with SVD</a></p>
+
+<hr style="margin-top: 3em; border: none; border-top: 1px solid #ddd;">
+<p style="color: #999; font-size: 0.85em;">
+  Reference: de Juan, A., Jaumot, J. &amp; Tauler, R. (2014). Multivariate Curve Resolution (MCR).
+  <em>Anal. Methods</em>, 6, 4964&ndash;4976.
+  <a href="https://doi.org/10.1039/c4ay00571f">DOI: 10.1039/c4ay00571f</a>
+</p>"""
+
+    html = wrap_page("Recovering Elution Profiles with MCR-ALS", body, nav_back=True, page_id="mcr-als")
+    Path("posts").mkdir(exist_ok=True)
+    Path("posts/mcr-als.html").write_text(html)
+    print("-> posts/mcr-als.html")
+
+
 if __name__ == "__main__":
     print("Building index...")
     build_index()
@@ -1103,4 +1518,6 @@ if __name__ == "__main__":
     build_generator_post()
     print("Building post 2: estimator...")
     build_estimator_post()
+    print("Building post 3: mcr-als...")
+    build_mcr_als_post()
     print("Done!")
