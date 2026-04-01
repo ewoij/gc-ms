@@ -769,9 +769,7 @@ weights, _ = nnls(profiles, ion_signal)
 # → molecule B contributes {nnls_w[1]:,.0f} intensity at m/z {nnls_mz}</pre>
 
 <p>Now we simply repeat this for <em>every</em> m/z channel (0&ndash;300). The vector
-of weights across all channels <em>is</em> the recovered mass spectrum for each molecule.
-As a bonus, these weights also give us <strong>quantification</strong> &mdash; we know
-exactly how much each molecule contributes to the signal.</p>
+of weights across all channels <em>is</em> the recovered mass spectrum for each molecule.</p>
 
 <h2>5. The Payoff: Clean Spectra</h2>
 <p>Using the true elution profiles (which we know in this synthetic example), NNLS
