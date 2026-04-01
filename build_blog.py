@@ -52,10 +52,17 @@ and nothing here should be taken as state of the art. If you spot something wron
 way, I'd love to hear about it!</p>"""
 
 
-def wrap_page(title, body, nav_back=False):
+def wrap_page(title, body, nav_back=False, page_id=None):
     nav = ""
     if nav_back:
         nav = '<div class="nav"><a href="../index.html">&larr; All posts</a></div>'
+    comments = ""
+    if page_id:
+        comments = f"""
+<div style="margin-top: 3em;">
+<script async src="https://talk.hyvor.com/embed/embed.js" type="module"></script>
+<hyvor-talk-comments website-id="15252" page-id="{page_id}"></hyvor-talk-comments>
+</div>"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -67,6 +74,7 @@ def wrap_page(title, body, nav_back=False):
 <body>
 {nav}
 {body}
+{comments}
 </body>
 </html>"""
 
@@ -843,7 +851,7 @@ whole problem. The upcoming posts tackle this step by step:</p>
   <a href="https://github.com/MassBank/MassBank-data">MassBank mass spectral library</a>
 </p>"""
 
-    html = wrap_page("Why Deconvolute?", body, nav_back=True)
+    html = wrap_page("Why Deconvolute?", body, nav_back=True, page_id="why-deconvolute")
     Path("posts").mkdir(exist_ok=True)
     Path("posts/why-deconvolute.html").write_text(html)
     print("-> posts/why-deconvolute.html")
@@ -948,7 +956,7 @@ tailing/fronting edge components.</p>
   <a href="https://github.com/MassBank/MassBank-data">MassBank mass spectral library</a>
 </p>"""
 
-    html = wrap_page("Building a Synthetic GC-MS Data Generator", body, nav_back=True)
+    html = wrap_page("Building a Synthetic GC-MS Data Generator", body, nav_back=True, page_id="generator")
     Path("posts").mkdir(exist_ok=True)
     Path("posts/generator.html").write_text(html)
     print("-> posts/generator.html")
@@ -1080,7 +1088,7 @@ elution profile and mass spectrum from the mixed signal.</p>
   <a href="https://bokeh.org">Bokeh</a>
 </p>"""
 
-    html = wrap_page("Counting Components with SVD", body, nav_back=True)
+    html = wrap_page("Counting Components with SVD", body, nav_back=True, page_id="estimator")
     Path("posts").mkdir(exist_ok=True)
     Path("posts/estimator.html").write_text(html)
     print("-> posts/estimator.html")
