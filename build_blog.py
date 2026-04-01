@@ -827,68 +827,36 @@ def plot_mcr_worst_example():
     return column(p_tic, p_prof)
 
 
-def plot_mcr_scale_ambiguity():
-    """Show per-component TIC mismatch due to scale ambiguity."""
-    sid = "0006"
-    ms, C, S, true_profiles, true_spectra = _mcr_load_sample(sid)
-    nc = len(true_profiles)
-    sim, matching = _mcr_match(C, S, true_profiles, true_spectra)
-    scans = np.arange(ms.shape[0])
-    palette = Category10[max(nc, 3)]
+def plot_mcr_scale_ratio():
+    """Show scale ratio distribution from benchmark."""
+    with open(MCR_BENCH / "summary.json") as f:
+        summary = json.load(f)
+    with open(MCR_BENCH / "results.csv") as f:
+        rows = list(csv.DictReader(f))
 
-    # Before fix: per-component TIC
-    p_before = figure(title=f"Per-component TIC — before NNLS fix (sample {sid})",
-                      x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300)
-    for r_idx in range(nc):
-        t_idx = matching.get(r_idx, r_idx)
-        color = palette[t_idx % len(palette)]
-        true_tic = true_profiles[t_idx]
-        rec_tic = C[:, r_idx] * S[r_idx].sum()
-        p_before.line(scans, true_tic, color=color, line_dash="dashed", line_width=2, line_alpha=0.5,
-                      legend_label=f"True {t_idx}")
-        p_before.line(scans, rec_tic, color=color, line_width=2,
-                      legend_label=f"Recovered {t_idx}")
-    p_before.legend.click_policy = "hide"
-    p_before.legend.location = "top_right"
+    scale_scores = [float(r["avg_scale_ratio"]) for r in rows]
 
-    # After NNLS fix
-    # Normalize profiles to peak=1, then NNLS for correct spectra
-    C_norm = C.copy()
-    for i in range(nc):
-        mx = C_norm[:, i].max()
-        if mx > 0:
-            C_norm[:, i] /= mx
+    p_hist = figure(title="Scale Ratio Distribution (ideal = 1.0)",
+                    x_axis_label="Scale Ratio", y_axis_label="Count",
+                    width=900, height=250)
+    lo = min(0.5, min(scale_scores))
+    hi = max(1.5, max(scale_scores))
+    hist, edges = np.histogram(scale_scores, bins=50, range=(lo, hi))
+    p_hist.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
 
-    S_nnls = np.zeros_like(S)
-    for mz in range(ms.shape[1]):
-        w, _ = nnls(C_norm, ms[:, mz])
-        for i in range(nc):
-            S_nnls[i, mz] = w[i]
+    # By component count
+    by_count = summary["by_component_count"]
+    counts = sorted(by_count.keys(), key=int)
+    scale_meds = [by_count[c]["scale_ratio_median"] for c in counts]
+    counts_int = [int(c) for c in counts]
 
-    p_after = figure(title=f"Per-component TIC — after NNLS fix",
-                     x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
-                     x_range=p_before.x_range)
-    # Re-match after NNLS
-    sim2 = np.zeros((nc, nc))
-    for i in range(nc):
-        for j in range(nc):
-            sim2[i, j] = _cos_sim(S_nnls[i], true_spectra[j])
-    ri2, ci2 = linear_sum_assignment(-sim2)
-    matching2 = {r: c for r, c in zip(ri2, ci2)}
+    p_by = figure(title="Median Scale Ratio by Component Count",
+                  x_axis_label="Components", y_axis_label="Median Scale Ratio",
+                  width=900, height=250)
+    p_by.line(counts_int, scale_meds, line_width=2, color="#2ca02c")
+    p_by.scatter(counts_int, scale_meds, size=8, color="#2ca02c")
 
-    for r_idx in range(nc):
-        t_idx = matching2.get(r_idx, r_idx)
-        color = palette[t_idx % len(palette)]
-        true_tic = true_profiles[t_idx]
-        rec_tic = C_norm[:, r_idx] * S_nnls[r_idx].sum()
-        p_after.line(scans, true_tic, color=color, line_dash="dashed", line_width=2, line_alpha=0.5,
-                     legend_label=f"True {t_idx}")
-        p_after.line(scans, rec_tic, color=color, line_width=2,
-                     legend_label=f"NNLS {t_idx}")
-    p_after.legend.click_policy = "hide"
-    p_after.legend.location = "top_right"
-
-    return column(p_before, p_after)
+    return column(p_hist, p_by)
 
 
 # -- Build all pages --
@@ -915,7 +883,7 @@ def build_index():
   </li>
   <li>
     <a href="posts/mcr-als.html">Part 3: Recovering Elution Profiles with MCR-ALS</a>
-    <p>Alternating least squares to recover profile shapes, benchmark on 1,000 samples, and the scale ambiguity problem.</p>
+    <p>Alternating least squares to recover profile shapes and benchmark on 1,000 samples.</p>
   </li>
   <li style="opacity: 0.5;">
     <span style="font-size: 1.2em; font-weight: 600;">Part 4: Deconvoluting Real Peaks</span>
@@ -1363,7 +1331,7 @@ def build_mcr_als_post():
     p2 = plot_mcr_benchmark_histograms()
     p3 = plot_mcr_examples_grid()
     p4 = plot_mcr_worst_example()
-    p5 = plot_mcr_scale_ambiguity()
+    p5 = plot_mcr_scale_ratio()
 
     s1, d1 = components(p1)
     s2, d2 = components(p2)
@@ -1378,12 +1346,18 @@ def build_mcr_als_post():
 <h1>Recovering Elution Profiles with MCR-ALS</h1>
 <p class="subtitle">Alternating least squares to separate overlapping GC-MS peaks</p>
 
+<p class="disclaimer"><strong>Warning:</strong> The benchmark in this post clearly needs better metrics &mdash;
+cosine similarity alone painted too rosy a picture, and the scale ratio is a rough first attempt
+that can hide errors (one component too high can compensate another too low). I don't have a
+great idea yet for a single number that captures everything. But this is a fun side project,
+so good enough for now &mdash; if you have suggestions, I'd love to hear them in the comments!</p>
+
 <h2>1. The Pipeline So Far</h2>
 <p>In <a href="why-deconvolute.html">Part 0</a> we saw why deconvolution matters &mdash;
 overlapping molecules contaminate each other's spectra and break library identification.
 In <a href="estimator.html">Part 2</a> we trained a model to estimate how many components
 are present (98.5% accuracy). Now comes the hard part: actually recovering the elution
-profiles and spectra.</p>
+profiles and spectra. Well, the <em>actual</em> hard part will be to do it on real data.</p>
 
 <h2>2. MCR-ALS in a Nutshell</h2>
 <p>MCR-ALS (Multivariate Curve Resolution &ndash; Alternating Least Squares) is a well-established
@@ -1440,7 +1414,8 @@ component estimator's training data) with 1&ndash;10 components each &mdash; 5,4
 
 <div class="stat">
   Spectra recovery &mdash; Median cosine: <strong>0.9999</strong> (P5: 0.9895)<br>
-  Profile recovery &mdash; Median cosine: <strong>1.0000</strong> (P5: 0.9891)
+  Profile recovery &mdash; Median cosine: <strong>1.0000</strong> (P5: 0.9891)<br>
+  Scale ratio &mdash; Median: <strong>1.04</strong> (P5: 0.93, P95: 1.22)
 </div>
 
 <div class="plot">{d2}</div>
@@ -1460,39 +1435,26 @@ spectra or extreme overlap where the algorithm can't distinguish between compone
 <div class="plot">{d4}</div>
 {s4}
 
-<h2>7. The Scale Ambiguity Problem</h2>
-<p>Here's something we discovered while investigating the results. The cosine similarity
-says 0.9999 &mdash; near perfect. But when we looked at the actual <em>intensity</em> of
-each recovered component, something was off. The per-component TICs didn't match at all:</p>
+<h2>7. But Cosine Similarity Hides Something</h2>
+<p>Cosine similarity only measures <em>shape</em> &mdash; it's completely blind to scale. A
+profile that's 20% too large still gets cosine = 1.0. So we added a second metric:
+the <strong>scale ratio</strong>, defined as:</p>
+<pre>scale_ratio = sum(recovered_TIC) / sum(true_TIC)</pre>
+<p>A perfect recovery gives 1.0. Here's the distribution across all 5,433 components:</p>
 
 <div class="plot">{d5}</div>
 {s5}
 
-<p>The top plot shows MCR-ALS output directly &mdash; the shapes are right but the amplitudes
-are completely wrong. Some components are 6x too large, others 6x too small.</p>
-<p>This is a <strong>known limitation</strong> of MCR-ALS called <em>scale ambiguity</em>:
-for each component, you can multiply the profile by any factor <code>k</code> and divide
-the spectrum by <code>k</code>, and the product <code>C @ S</code> stays identical. The
-algorithm has no way to know how to distribute the scale between C and S.</p>
-<p>Cosine similarity was hiding this because it only measures shape, not magnitude.</p>
+<p>The median is <strong>1.04</strong> &mdash; a systematic ~4% overestimate (not sure why it's
+consistently over). The P5&ndash;P95 range spans 0.93&ndash;1.22, meaning some components
+are off by up to 22%. This is consistent across component counts.</p>
+<p>This makes sense: MCR-ALS can shift intensity between components while keeping the total
+reconstruction accurate (the overall <code>C @ S</code> residual is tiny). Cosine similarity
+was giving us a false sense of precision because it only checks whether the shapes match.</p>
 
-<h2>8. The Fix: NNLS to the Rescue</h2>
-<p>The fix is straightforward: use MCR-ALS for what it's good at (recovering <em>shapes</em>),
-then use NNLS to get the correct amplitudes. Normalize the recovered profiles to peak=1,
-then solve each m/z channel independently:</p>
-<pre>for mz in range(301):
-    weights, _ = nnls(C_normalized, ms[:, mz])</pre>
-<p>The bottom plot above shows the result &mdash; after NNLS, the per-component TICs match
-correctly. This is exactly the same technique we demonstrated in
-<a href="why-deconvolute.html">Part 0</a>.</p>
-<p>The full pipeline becomes: <strong>SVD</strong> (count components) &rarr; <strong>MCR-ALS</strong>
-(recover profile shapes) &rarr; <strong>NNLS</strong> (recover spectra at correct scale).</p>
-
-<h2>9. What's Next</h2>
-<p>These results on synthetic data are encouraging &mdash; MCR-ALS recovers profile shapes
-nearly perfectly, and NNLS fixes the scale. But synthetic data is clean and well-behaved.
-The real test is <a href="#">Part 4</a>: running this pipeline on actual GC-MS data from the
-Copenhagen Soft Camel Cheese dataset.</p>
+<h2>8. What's Next</h2>
+<p>The shapes are excellent, but the per-component intensities need work. In the next part,
+we'll try this pipeline on actual GC-MS data &mdash; where the real challenges begin.</p>
 
 <p><a href="estimator.html">&larr; Part 2: Counting Components with SVD</a></p>
 

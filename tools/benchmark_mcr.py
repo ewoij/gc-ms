@@ -86,6 +86,15 @@ def benchmark_sample(sample_dir, n_components, result_dir=None):
     spec_scores = [m[2] for m in spec_matches]
     prof_scores = [m[2] for m in prof_matches]
 
+    # Scale ratios: use spectra matching to pair components
+    scale_ratios = []
+    for r_idx, t_idx, _ in spec_matches:
+        rec_tic = C[:, r_idx] * S[r_idx].sum()
+        true_tic = true_profiles[t_idx]
+        true_sum = true_tic.sum()
+        ratio = rec_tic.sum() / true_sum if true_sum > 0 else 1.0
+        scale_ratios.append(ratio)
+
     # Save recovered components
     if result_dir is not None:
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -95,8 +104,10 @@ def benchmark_sample(sample_dir, n_components, result_dir=None):
     return {
         "avg_spectra_cos": np.mean(spec_scores) if spec_scores else 0,
         "avg_profile_cos": np.mean(prof_scores) if prof_scores else 0,
+        "avg_scale_ratio": np.mean(scale_ratios) if scale_ratios else 1.0,
         "spectra_scores": spec_scores,
         "profile_scores": prof_scores,
+        "scale_ratios": scale_ratios,
     }
 
 
@@ -109,6 +120,7 @@ def run_benchmark(data_dir: Path):
 
     all_spec_scores = []
     all_prof_scores = []
+    all_scale_ratios = []
     by_count = {}
     results = []
 
@@ -129,27 +141,31 @@ def run_benchmark(data_dir: Path):
             "num_components": nc,
             "avg_spectra_cos": result["avg_spectra_cos"],
             "avg_profile_cos": result["avg_profile_cos"],
+            "avg_scale_ratio": result["avg_scale_ratio"],
         })
 
         all_spec_scores.extend(result["spectra_scores"])
         all_prof_scores.extend(result["profile_scores"])
+        all_scale_ratios.extend(result["scale_ratios"])
 
-        by_count.setdefault(nc, {"spec": [], "prof": []})
+        by_count.setdefault(nc, {"spec": [], "prof": [], "scale": []})
         by_count[nc]["spec"].extend(result["spectra_scores"])
         by_count[nc]["prof"].extend(result["profile_scores"])
+        by_count[nc]["scale"].extend(result["scale_ratios"])
 
         if (i + 1) % 50 == 0 or i == 0:
             print(f"  [{i+1}/{len(rows)}] spec={result['avg_spectra_cos']:.3f} prof={result['avg_profile_cos']:.3f}")
 
     # Save results CSV
     with open(out_dir / "results.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["sample_id", "num_components", "avg_spectra_cos", "avg_profile_cos"])
+        writer = csv.DictWriter(f, fieldnames=["sample_id", "num_components", "avg_spectra_cos", "avg_profile_cos", "avg_scale_ratio"])
         writer.writeheader()
         writer.writerows(results)
 
     # Summary
     spec_arr = np.array(all_spec_scores)
     prof_arr = np.array(all_prof_scores)
+    scale_arr = np.array(all_scale_ratios)
 
     summary = {
         "total_samples": len(results),
@@ -168,16 +184,25 @@ def run_benchmark(data_dir: Path):
             "p75": float(np.percentile(prof_arr, 75)),
             "p95": float(np.percentile(prof_arr, 95)),
         },
+        "scale_ratio": {
+            "median": float(np.median(scale_arr)),
+            "p5": float(np.percentile(scale_arr, 5)),
+            "p25": float(np.percentile(scale_arr, 25)),
+            "p75": float(np.percentile(scale_arr, 75)),
+            "p95": float(np.percentile(scale_arr, 95)),
+        },
         "by_component_count": {},
     }
 
     for nc in sorted(by_count):
         s = np.array(by_count[nc]["spec"])
         p = np.array(by_count[nc]["prof"])
+        sc = np.array(by_count[nc]["scale"])
         summary["by_component_count"][str(nc)] = {
             "n_samples": len(by_count[nc]["spec"]),
             "spectra_median": float(np.median(s)),
             "profile_median": float(np.median(p)),
+            "scale_ratio_median": float(np.median(sc)),
         }
 
     with open(out_dir / "summary.json", "w") as f:
@@ -192,19 +217,22 @@ def run_benchmark(data_dir: Path):
     print(f"\nProfile recovery (cosine similarity):")
     print(f"  Median: {summary['profiles']['median']:.4f}")
     print(f"  P5: {summary['profiles']['p5']:.4f}  P25: {summary['profiles']['p25']:.4f}  P75: {summary['profiles']['p75']:.4f}  P95: {summary['profiles']['p95']:.4f}")
+    print(f"\nScale ratio (sum(recovered) / sum(true), ideal=1.0):")
+    print(f"  Median: {summary['scale_ratio']['median']:.4f}")
+    print(f"  P5: {summary['scale_ratio']['p5']:.4f}  P25: {summary['scale_ratio']['p25']:.4f}  P75: {summary['scale_ratio']['p75']:.4f}  P95: {summary['scale_ratio']['p95']:.4f}")
     print(f"\nBy component count:")
     for nc in sorted(by_count):
         s = summary["by_component_count"][str(nc)]
-        print(f"  {nc:>2} components: spectra={s['spectra_median']:.4f}  profiles={s['profile_median']:.4f}")
+        print(f"  {nc:>2} components: spectra={s['spectra_median']:.4f}  profiles={s['profile_median']:.4f}  scale={s['scale_ratio_median']:.4f}")
     # HTML report
-    build_report(out_dir, spec_arr, prof_arr, by_count, results, summary)
+    build_report(out_dir, spec_arr, prof_arr, scale_arr, by_count, results, summary)
 
     print(f"\n  -> {out_dir}/results.csv")
     print(f"  -> {out_dir}/summary.json")
     print(f"  -> {out_dir}/report.html")
 
 
-def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
+def build_report(out_dir, spec_arr, prof_arr, scale_arr, by_count, results, summary):
     # Spectra histogram
     p_spec = figure(title="Spectra Recovery — Cosine Similarity Distribution",
                     x_axis_label="Cosine Similarity", y_axis_label="Count",
@@ -218,6 +246,15 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
                     width=900, height=300)
     hist, edges = np.histogram(prof_arr, bins=50, range=(min(0.8, prof_arr.min()), 1.0))
     p_prof.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
+
+    # Scale ratio histogram
+    p_scale = figure(title="Scale Ratio Distribution (ideal = 1.0)",
+                     x_axis_label="Scale Ratio", y_axis_label="Count",
+                     width=900, height=300)
+    lo = min(0.5, scale_arr.min())
+    hi = max(1.5, scale_arr.max())
+    hist, edges = np.histogram(scale_arr, bins=50, range=(lo, hi))
+    p_scale.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
 
     # Breakdown by component count
     counts = sorted(by_count.keys())
@@ -233,6 +270,14 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
     p_by_count.scatter(counts, prof_medians, size=8, color="#ff7f0e")
     p_by_count.legend.location = "bottom_left"
 
+    # Scale ratio by component count
+    scale_medians = [np.median(by_count[nc]["scale"]) for nc in counts]
+    p_scale_by_count = figure(title="Median Scale Ratio by Component Count",
+                              x_axis_label="Number of Components", y_axis_label="Median Scale Ratio",
+                              width=900, height=300)
+    p_scale_by_count.line(counts, scale_medians, line_width=2, color="#2ca02c")
+    p_scale_by_count.scatter(counts, scale_medians, size=8, color="#2ca02c")
+
     # Summary stats table
     stats_html = f"""
     <h2>Summary</h2>
@@ -241,7 +286,7 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
         <th></th><th>Median</th><th>P5</th><th>P25</th><th>P75</th><th>P95</th>
     </tr>
     <tr>
-        <td><strong>Spectra</strong></td>
+        <td><strong>Spectra (cos)</strong></td>
         <td>{summary['spectra']['median']:.4f}</td>
         <td>{summary['spectra']['p5']:.4f}</td>
         <td>{summary['spectra']['p25']:.4f}</td>
@@ -249,12 +294,20 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
         <td>{summary['spectra']['p95']:.4f}</td>
     </tr>
     <tr>
-        <td><strong>Profiles</strong></td>
+        <td><strong>Profiles (cos)</strong></td>
         <td>{summary['profiles']['median']:.4f}</td>
         <td>{summary['profiles']['p5']:.4f}</td>
         <td>{summary['profiles']['p25']:.4f}</td>
         <td>{summary['profiles']['p75']:.4f}</td>
         <td>{summary['profiles']['p95']:.4f}</td>
+    </tr>
+    <tr>
+        <td><strong>Scale ratio</strong></td>
+        <td>{summary['scale_ratio']['median']:.4f}</td>
+        <td>{summary['scale_ratio']['p5']:.4f}</td>
+        <td>{summary['scale_ratio']['p25']:.4f}</td>
+        <td>{summary['scale_ratio']['p75']:.4f}</td>
+        <td>{summary['scale_ratio']['p95']:.4f}</td>
     </tr>
     </table>
     <p>{summary['total_samples']} samples, {summary['total_components']} components</p>
@@ -264,14 +317,15 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
     sorted_results = sorted(results, key=lambda r: r["avg_spectra_cos"])
     worst_rows = "".join(
         f"<tr><td>{r['sample_id']}</td><td>{r['num_components']}</td>"
-        f"<td>{r['avg_spectra_cos']:.4f}</td><td>{r['avg_profile_cos']:.4f}</td></tr>"
+        f"<td>{r['avg_spectra_cos']:.4f}</td><td>{r['avg_profile_cos']:.4f}</td>"
+        f"<td>{r['avg_scale_ratio']:.4f}</td></tr>"
         for r in sorted_results[:10]
     )
     worst_html = f"""
     <h2>Worst 10 Samples</h2>
     <table style="border-collapse: collapse; font-size: 0.95em;">
     <tr style="border-bottom: 2px solid #ddd;">
-        <th>Sample</th><th>Components</th><th>Spectra Cos</th><th>Profile Cos</th>
+        <th>Sample</th><th>Components</th><th>Spectra Cos</th><th>Profile Cos</th><th>Scale Ratio</th>
     </tr>
     {worst_rows}
     </table>
@@ -279,7 +333,9 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
 
     s1, d1 = components(p_spec)
     s2, d2 = components(p_prof)
-    s3, d3 = components(p_by_count)
+    s3, d3 = components(p_scale)
+    s4, d4 = components(p_by_count)
+    s5, d5 = components(p_scale_by_count)
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -299,6 +355,8 @@ def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
 {d1}{s1}
 {d2}{s2}
 {d3}{s3}
+{d4}{s4}
+{d5}{s5}
 {worst_html}
 </body></html>"""
 

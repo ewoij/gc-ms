@@ -7,6 +7,7 @@ from pathlib import Path
 from scipy.optimize import linear_sum_assignment
 from bokeh.io import output_file, save
 from bokeh.layouts import gridplot
+from bokeh.palettes import Category10_10
 from bokeh.plotting import figure
 
 
@@ -56,11 +57,12 @@ for row in sorted(sampled, key=lambda r: r["sample_id"]):
     scans = np.arange(C.shape[0])
     p = figure(title=f"{sid} ({nc}c)", width=200, height=140)
 
-    for r_idx, t_idx in zip(ri, ci):
+    for k, (r_idx, t_idx) in enumerate(zip(ri, ci)):
         true_tic = true_profiles[t_idx]
         rec_tic = C[:, r_idx] * S[r_idx].sum()
-        diff = true_tic - rec_tic
-        p.line(scans, diff, line_alpha=0.6, line_width=0.8)
+        diff = (true_tic - rec_tic) / np.maximum(true_tic, 1e-10)
+        p.line(scans, diff, line_alpha=0.6, line_width=0.8,
+               color=Category10_10[k % 10])
 
     p.title.text_font_size = "9pt"
     plots.append(p)
