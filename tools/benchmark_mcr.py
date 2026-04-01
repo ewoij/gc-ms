@@ -11,6 +11,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from bokeh.embed import components
+from bokeh.io import output_file, save
+from bokeh.layouts import column, gridplot
+from bokeh.models import Div
+from bokeh.plotting import figure
+from bokeh.resources import CDN
 from scipy.optimize import linear_sum_assignment
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -51,7 +57,7 @@ def match_components(recovered, true_list, metric_fn):
     return matches
 
 
-def benchmark_sample(sample_dir, n_components):
+def benchmark_sample(sample_dir, n_components, result_dir=None):
     ms = np.load(sample_dir / "ms.npy")
     gt_dir = sample_dir / "ground_truth"
     gt_files = sorted(gt_dir.glob("*.npy"), key=lambda p: int(p.stem))
@@ -62,8 +68,6 @@ def benchmark_sample(sample_dir, n_components):
     for gt_path in gt_files:
         gt = np.load(gt_path)
         profile = gt.sum(axis=1)
-        # Extract spectrum: use NNLS-style (profile as single column)
-        # Or simpler: spectrum at the apex of this component
         apex = np.argmax(profile)
         true_spectra.append(gt[apex, :])
         true_profiles.append(profile)
@@ -81,6 +85,12 @@ def benchmark_sample(sample_dir, n_components):
 
     spec_scores = [m[2] for m in spec_matches]
     prof_scores = [m[2] for m in prof_matches]
+
+    # Save recovered components
+    if result_dir is not None:
+        result_dir.mkdir(parents=True, exist_ok=True)
+        np.save(result_dir / "C.npy", C)
+        np.save(result_dir / "S.npy", S)
 
     return {
         "avg_spectra_cos": np.mean(spec_scores) if spec_scores else 0,
@@ -108,7 +118,8 @@ def run_benchmark(data_dir: Path):
         sample_dir = data_dir / sid
 
         try:
-            result = benchmark_sample(sample_dir, nc)
+            result_dir = out_dir / sid
+            result = benchmark_sample(sample_dir, nc, result_dir=result_dir)
         except Exception as e:
             print(f"  [{sid}] ERROR: {e}")
             continue
@@ -185,8 +196,114 @@ def run_benchmark(data_dir: Path):
     for nc in sorted(by_count):
         s = summary["by_component_count"][str(nc)]
         print(f"  {nc:>2} components: spectra={s['spectra_median']:.4f}  profiles={s['profile_median']:.4f}")
+    # HTML report
+    build_report(out_dir, spec_arr, prof_arr, by_count, results, summary)
+
     print(f"\n  -> {out_dir}/results.csv")
     print(f"  -> {out_dir}/summary.json")
+    print(f"  -> {out_dir}/report.html")
+
+
+def build_report(out_dir, spec_arr, prof_arr, by_count, results, summary):
+    # Spectra histogram
+    p_spec = figure(title="Spectra Recovery — Cosine Similarity Distribution",
+                    x_axis_label="Cosine Similarity", y_axis_label="Count",
+                    width=900, height=300)
+    hist, edges = np.histogram(spec_arr, bins=50, range=(min(0.8, spec_arr.min()), 1.0))
+    p_spec.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
+
+    # Profile histogram
+    p_prof = figure(title="Profile Recovery — Cosine Similarity Distribution",
+                    x_axis_label="Cosine Similarity", y_axis_label="Count",
+                    width=900, height=300)
+    hist, edges = np.histogram(prof_arr, bins=50, range=(min(0.8, prof_arr.min()), 1.0))
+    p_prof.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:], alpha=0.7)
+
+    # Breakdown by component count
+    counts = sorted(by_count.keys())
+    spec_medians = [np.median(by_count[nc]["spec"]) for nc in counts]
+    prof_medians = [np.median(by_count[nc]["prof"]) for nc in counts]
+
+    p_by_count = figure(title="Median Cosine Similarity by Component Count",
+                        x_axis_label="Number of Components", y_axis_label="Median Cosine",
+                        width=900, height=300)
+    p_by_count.line(counts, spec_medians, line_width=2, legend_label="Spectra", color="#1f77b4")
+    p_by_count.scatter(counts, spec_medians, size=8, color="#1f77b4")
+    p_by_count.line(counts, prof_medians, line_width=2, legend_label="Profiles", color="#ff7f0e")
+    p_by_count.scatter(counts, prof_medians, size=8, color="#ff7f0e")
+    p_by_count.legend.location = "bottom_left"
+
+    # Summary stats table
+    stats_html = f"""
+    <h2>Summary</h2>
+    <table style="border-collapse: collapse; font-size: 0.95em;">
+    <tr style="border-bottom: 2px solid #ddd;">
+        <th></th><th>Median</th><th>P5</th><th>P25</th><th>P75</th><th>P95</th>
+    </tr>
+    <tr>
+        <td><strong>Spectra</strong></td>
+        <td>{summary['spectra']['median']:.4f}</td>
+        <td>{summary['spectra']['p5']:.4f}</td>
+        <td>{summary['spectra']['p25']:.4f}</td>
+        <td>{summary['spectra']['p75']:.4f}</td>
+        <td>{summary['spectra']['p95']:.4f}</td>
+    </tr>
+    <tr>
+        <td><strong>Profiles</strong></td>
+        <td>{summary['profiles']['median']:.4f}</td>
+        <td>{summary['profiles']['p5']:.4f}</td>
+        <td>{summary['profiles']['p25']:.4f}</td>
+        <td>{summary['profiles']['p75']:.4f}</td>
+        <td>{summary['profiles']['p95']:.4f}</td>
+    </tr>
+    </table>
+    <p>{summary['total_samples']} samples, {summary['total_components']} components</p>
+    """
+
+    # Worst 10 samples
+    sorted_results = sorted(results, key=lambda r: r["avg_spectra_cos"])
+    worst_rows = "".join(
+        f"<tr><td>{r['sample_id']}</td><td>{r['num_components']}</td>"
+        f"<td>{r['avg_spectra_cos']:.4f}</td><td>{r['avg_profile_cos']:.4f}</td></tr>"
+        for r in sorted_results[:10]
+    )
+    worst_html = f"""
+    <h2>Worst 10 Samples</h2>
+    <table style="border-collapse: collapse; font-size: 0.95em;">
+    <tr style="border-bottom: 2px solid #ddd;">
+        <th>Sample</th><th>Components</th><th>Spectra Cos</th><th>Profile Cos</th>
+    </tr>
+    {worst_rows}
+    </table>
+    """
+
+    s1, d1 = components(p_spec)
+    s2, d2 = components(p_prof)
+    s3, d3 = components(p_by_count)
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>MCR-ALS Benchmark Report</title>
+{CDN.render()}
+<style>
+  body {{ max-width: 960px; margin: 40px auto; padding: 0 20px;
+         font-family: -apple-system, sans-serif; line-height: 1.6; color: #333; }}
+  h1 {{ font-size: 1.8em; }}
+  h2 {{ font-size: 1.3em; margin-top: 2em; }}
+  table {{ margin: 1em 0; }}
+  th, td {{ padding: 6px 16px; text-align: left; }}
+</style>
+</head><body>
+<h1>MCR-ALS Benchmark Report</h1>
+{stats_html}
+{d1}{s1}
+{d2}{s2}
+{d3}{s3}
+{worst_html}
+</body></html>"""
+
+    with open(out_dir / "report.html", "w") as f:
+        f.write(html)
 
 
 def main():
