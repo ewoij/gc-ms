@@ -8,12 +8,13 @@ from pathlib import Path
 import joblib
 import numpy as np
 from bokeh.embed import components
-from bokeh.layouts import column, gridplot
+from bokeh.layouts import column, gridplot, row
 from bokeh.models import Range1d, RangeTool
 from bokeh.palettes import Category10, TolRainbow, Turbo256, Viridis256
 from bokeh.plotting import figure
 from bokeh.resources import CDN
 from scipy.interpolate import interp1d
+from scipy.optimize import nnls
 
 
 # -- Shared HTML --
@@ -372,6 +373,157 @@ def plot_feature_importances():
     return p
 
 
+# -- Post 0: Why Deconvolute plots --
+
+INTRO_DIR = Path("data/synthetic/blog_intro")
+SPEC_IDX_0, SPEC_IDX_1 = 0, 101  # 4-METHYL-2-PENTANONE, 3-OCTANONE
+
+
+def _load_intro_data():
+    ms = np.load(INTRO_DIR / "ms.npy")
+    gt0 = np.load(INTRO_DIR / "ground_truth/0.npy")
+    gt1 = np.load(INTRO_DIR / "ground_truth/1.npy")
+    with open("data/spectra.json") as f:
+        spectra_lib = json.load(f)
+    return ms, gt0, gt1, spectra_lib
+
+
+def _make_ref_vec(spectra_lib, idx):
+    vec = np.zeros(301)
+    for mz, intensity in spectra_lib[idx]["peaks"]:
+        if 0 <= mz <= 300:
+            vec[mz] = intensity
+    return vec
+
+
+def _cos_sim(a, b):
+    d = np.dot(a, b)
+    n = np.linalg.norm(a) * np.linalg.norm(b)
+    return d / n if n > 0 else 0
+
+
+def plot_intro_clean_example():
+    ms, gt0, gt1, _ = _load_intro_data()
+    scans = np.arange(ms.shape[0])
+    tic = ms.sum(axis=1)
+    tic0 = gt0.sum(axis=1)
+    tic1 = gt1.sum(axis=1)
+    palette = Category10[3]
+
+    # Components
+    p_gt = figure(title="Two overlapping molecules (simplified — no noise)",
+                  x_axis_label="Scan", y_axis_label="Intensity", width=900, height=250)
+    p_gt.line(scans, tic, color="black", line_width=2, line_alpha=0.3, legend_label="Combined TIC")
+    p_gt.line(scans, tic0, color=palette[0], line_width=2, legend_label="4-Methyl-2-pentanone")
+    p_gt.line(scans, tic1, color=palette[1], line_width=2, legend_label="3-Octanone")
+    p_gt.legend.click_policy = "hide"
+
+    # Ion traces
+    num_ions = ms.shape[1]
+    ion_colors = [TolRainbow[23][i % 23] for i in range(num_ions)]
+    p_ions = figure(title="All ion channels — what the instrument actually records",
+                    x_axis_label="Scan", y_axis_label="Intensity", width=900, height=300,
+                    x_range=p_gt.x_range)
+    xs = [scans] * num_ions
+    ys = [ms[:, i] for i in range(num_ions)]
+    p_ions.multi_line(xs, ys, line_color=ion_colors, line_alpha=0.8, line_width=0.7)
+
+    return column(p_gt, p_ions)
+
+
+def plot_intro_contaminated_spectra():
+    ms, gt0, gt1, spectra_lib = _load_intro_data()
+    profile0 = gt0.sum(axis=1)
+    profile1 = gt1.sum(axis=1)
+    apex0 = int(np.argmax(profile0))
+    apex1 = int(np.argmax(profile1))
+
+    ref0 = _make_ref_vec(spectra_lib, SPEC_IDX_0)
+    ref1 = _make_ref_vec(spectra_lib, SPEC_IDX_1)
+    contaminated0 = ms[apex0, :]
+    contaminated1 = ms[apex1, :]
+
+    # Normalize for comparison
+    def norm(v):
+        mx = v.max()
+        return v / mx if mx > 0 else v
+
+    sim0 = _cos_sim(contaminated0, ref0)
+    sim1 = _cos_sim(contaminated1, ref1)
+    palette = Category10[3]
+
+    # Molecule 0: reference vs contaminated
+    p0_ref = figure(title=f"Reference: {spectra_lib[SPEC_IDX_0]['name']}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250)
+    p0_ref.vbar(x=np.arange(301), top=norm(ref0), width=0.8, color=palette[0], alpha=0.7)
+
+    p0_cont = figure(title=f"Extracted at apex (scan {apex0}) — cos sim: {sim0:.3f}",
+                     x_axis_label="m/z", y_axis_label="Intensity",
+                     width=440, height=250, x_range=p0_ref.x_range)
+    p0_cont.vbar(x=np.arange(301), top=norm(contaminated0), width=0.8, color="gray", alpha=0.7)
+
+    # Molecule 1: reference vs contaminated
+    p1_ref = figure(title=f"Reference: {spectra_lib[SPEC_IDX_1]['name']}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250)
+    p1_ref.vbar(x=np.arange(301), top=norm(ref1), width=0.8, color=palette[1], alpha=0.7)
+
+    p1_cont = figure(title=f"Extracted at apex (scan {apex1}) — cos sim: {sim1:.3f}",
+                     x_axis_label="m/z", y_axis_label="Intensity",
+                     width=440, height=250, x_range=p1_ref.x_range)
+    p1_cont.vbar(x=np.arange(301), top=norm(contaminated1), width=0.8, color="gray", alpha=0.7)
+
+    return gridplot([[p0_ref, p0_cont], [p1_ref, p1_cont]], merge_tools=False)
+
+
+def plot_intro_separated_spectra():
+    ms, gt0, gt1, spectra_lib = _load_intro_data()
+    profile0 = gt0.sum(axis=1)
+    profile1 = gt1.sum(axis=1)
+
+    ref0 = _make_ref_vec(spectra_lib, SPEC_IDX_0)
+    ref1 = _make_ref_vec(spectra_lib, SPEC_IDX_1)
+
+    # NNLS separation using ground truth profiles
+    profiles = np.column_stack([profile0, profile1])
+    recovered = np.zeros((2, 301))
+    for mz in range(301):
+        w, _ = nnls(profiles, ms[:, mz])
+        recovered[0, mz] = w[0]
+        recovered[1, mz] = w[1]
+
+    def norm(v):
+        mx = v.max()
+        return v / mx if mx > 0 else v
+
+    sim0 = _cos_sim(recovered[0], ref0)
+    sim1 = _cos_sim(recovered[1], ref1)
+    palette = Category10[3]
+
+    p0_ref = figure(title=f"Reference: {spectra_lib[SPEC_IDX_0]['name']}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250)
+    p0_ref.vbar(x=np.arange(301), top=norm(ref0), width=0.8, color=palette[0], alpha=0.7)
+
+    p0_rec = figure(title=f"Recovered after NNLS — cos sim: {sim0:.4f}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250, x_range=p0_ref.x_range)
+    p0_rec.vbar(x=np.arange(301), top=norm(recovered[0]), width=0.8, color=palette[0], alpha=0.7)
+
+    p1_ref = figure(title=f"Reference: {spectra_lib[SPEC_IDX_1]['name']}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250)
+    p1_ref.vbar(x=np.arange(301), top=norm(ref1), width=0.8, color=palette[1], alpha=0.7)
+
+    p1_rec = figure(title=f"Recovered after NNLS — cos sim: {sim1:.4f}",
+                    x_axis_label="m/z", y_axis_label="Intensity",
+                    width=440, height=250, x_range=p1_ref.x_range)
+    p1_rec.vbar(x=np.arange(301), top=norm(recovered[1]), width=0.8, color=palette[1], alpha=0.7)
+
+    return gridplot([[p0_ref, p0_rec], [p1_ref, p1_rec]], merge_tools=False)
+
+
 # -- Build all pages --
 
 def build_index():
@@ -382,6 +534,10 @@ def build_index():
 {DISCLAIMER}
 
 <ul class="post-list">
+  <li>
+    <a href="posts/why-deconvolute.html">Part 0: Why Deconvolute?</a>
+    <p>What happens when molecules overlap, and how separating them fixes identification.</p>
+  </li>
   <li>
     <a href="posts/generator.html">Part 1: Building a Synthetic GC-MS Data Generator</a>
     <p>From raw CDF files to a realistic data generator using real elution profiles and mass spectra.</p>
@@ -421,6 +577,104 @@ at times.</div>
     html = wrap_page("GC-MS Deconvolution Project", body)
     Path("index.html").write_text(html)
     print("-> index.html")
+
+
+def build_why_deconvolute_post():
+    p1 = plot_real_sample()
+    p2 = plot_intro_clean_example()
+    p3 = plot_intro_contaminated_spectra()
+    p4 = plot_intro_separated_spectra()
+
+    s1, d1 = components(p1)
+    s2, d2 = components(p2)
+    s3, d3 = components(p3)
+    s4, d4 = components(p4)
+
+    body = f"""
+<h1>Why Deconvolute?</h1>
+<p class="subtitle">What happens when molecules overlap, and why it matters for identification</p>
+
+<h2>1. A Real GC-MS Run</h2>
+<p>A GC-MS instrument separates molecules over time (chromatography) and measures their
+mass fragmentation pattern (mass spectrometry). The result is an intensity matrix:
+scans &times; m/z channels. Here's a real run from the Copenhagen Soft Camel Cheese dataset:</p>
+
+<div class="plot">{d1}</div>
+{s1}
+
+<p>Each bump in the TIC represents one or more molecules eluting. In an ideal world,
+each molecule would elute at a unique time and we could simply read off its spectrum.
+But in practice, molecules overlap constantly.</p>
+
+<h2>2. A Simplified Example</h2>
+<p>Let's look at what happens when two molecules coelute. Here's a clean, synthetic example
+with no noise and no baseline &mdash; just two overlapping molecules:</p>
+
+<div class="plot">{d2}</div>
+{s2}
+
+<p>The colored lines show the true elution profiles of each molecule. The instrument
+doesn't see these separately &mdash; it only records the combined signal (ion channels plot).
+The question is: can we identify what's in there?</p>
+
+<h2>3. The Problem: Contaminated Spectra</h2>
+<p>The standard approach to identify a molecule is to extract the mass spectrum at its
+peak apex and match it against a reference library. Let's try that:</p>
+
+<div class="plot">{d3}</div>
+{s3}
+
+<p>The left column shows the pure reference spectra from our library. The right column
+shows what we actually extract from the combined signal at each apex scan. They look
+similar but not identical &mdash; each extracted spectrum is <em>contaminated</em> by
+the other molecule's signal. The cosine similarity drops below 1.0, which means library
+matching becomes less reliable. With more overlap or more similar molecules, this gets
+much worse.</p>
+
+<h2>4. The Solution: Deconvolution</h2>
+<p>Deconvolution is the process of separating the mixed signal back into its individual
+components. The key idea:</p>
+<ol>
+  <li><strong>Recover the elution profiles</strong> &mdash; figure out how each molecule's
+      signal varies over time</li>
+  <li><strong>Separate the matrix</strong> &mdash; using the elution profiles, solve for each
+      molecule's pure spectrum via non-negative least squares (NNLS)</li>
+</ol>
+<p>For each m/z channel, we solve: <code>signal = w&sub1; &middot; profile&sub1; + w&sub2; &middot; profile&sub2;</code>.
+The weights <code>w</code> give us each molecule's contribution at that m/z &mdash; which is
+exactly the recovered spectrum.</p>
+
+<h2>5. The Payoff: Clean Spectra</h2>
+<p>If we use the true elution profiles (which we know in this synthetic example), NNLS
+perfectly separates the mixed signal:</p>
+
+<div class="plot">{d4}</div>
+{s4}
+
+<p>The recovered spectra match the reference <em>perfectly</em> &mdash; cosine similarity
+of 1.0000. Library matching now works flawlessly.</p>
+
+<h2>6. The Challenge Ahead</h2>
+<p>Of course, in practice we <em>don't know</em> the elution profiles &mdash; that's the
+whole problem. The upcoming posts tackle this step by step:</p>
+<ul>
+  <li><a href="generator.html">Part 1</a>: Building realistic synthetic training data</li>
+  <li><a href="estimator.html">Part 2</a>: Estimating how many components are present (98.5% accuracy)</li>
+  <li>Part 3: Recovering the elution profiles themselves</li>
+  <li>Part 4: Putting it all together on real data</li>
+</ul>
+
+<hr style="margin-top: 3em; border: none; border-top: 1px solid #ddd;">
+<p style="color: #999; font-size: 0.85em;">
+  Data sources:
+  <a href="https://ucphchemometrics.com/">Copenhagen Soft Camel Cheese GC-MS dataset</a>,
+  <a href="https://github.com/MassBank/MassBank-data">MassBank mass spectral library</a>
+</p>"""
+
+    html = wrap_page("Why Deconvolute?", body, nav_back=True)
+    Path("posts").mkdir(exist_ok=True)
+    Path("posts/why-deconvolute.html").write_text(html)
+    print("-> posts/why-deconvolute.html")
 
 
 def build_generator_post():
@@ -663,6 +917,8 @@ elution profile and mass spectrum from the mixed signal.</p>
 if __name__ == "__main__":
     print("Building index...")
     build_index()
+    print("Building post 0: why deconvolute...")
+    build_why_deconvolute_post()
     print("Building post 1: generator...")
     build_generator_post()
     print("Building post 2: estimator...")
