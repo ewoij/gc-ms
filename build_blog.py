@@ -779,8 +779,10 @@ perfectly separates the mixed signal:</p>
 <div class="plot">{d4}</div>
 {s4}
 
-<p>The recovered spectra match the reference <em>perfectly</em>. Let's run the library
-search again on the deconvoluted spectra:</p>
+<p>The recovered spectra match the reference <em>perfectly</em> &mdash; but keep in mind
+this is synthetic data with no noise. On real data the match won't be exact, but it will
+be dramatically better than the contaminated version. Let's run the library search again
+on the deconvoluted spectra:</p>
 
 <h3>Library search on recovered spectrum A:</h3>
 {table_rec0}
