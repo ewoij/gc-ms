@@ -885,9 +885,9 @@ def build_index():
     <a href="posts/mcr-als.html">Part 3: Recovering Elution Profiles with MCR-ALS</a>
     <p>Alternating least squares to recover profile shapes and benchmark on 1,000 samples.</p>
   </li>
-  <li style="opacity: 0.5;">
-    <span style="font-size: 1.2em; font-weight: 600;">Part 4: Deconvoluting Real Peaks</span>
-    <p>Upcoming &mdash; hopefully that works! 😱😂</p>
+  <li>
+    <a href="posts/real-data.html">Part 4: Deconvoluting Real Peaks</a>
+    <p>Applying the pipeline to real GC-MS data &mdash; spoiler: it doesn't work 😭</p>
   </li>
   <li style="opacity: 0.5;">
     <span style="font-size: 1.2em; font-weight: 600;">Part 5: Benchmarking Against Existing Tools</span>
@@ -1471,6 +1471,176 @@ we'll try this pipeline on actual GC-MS data &mdash; where the real challenges b
     print("-> posts/mcr-als.html")
 
 
+def _load_all_pipeline_results():
+    """Load pipeline results from all analyses."""
+    data_dir = Path("data")
+    all_peaks = []
+    for analysis_dir in sorted(data_dir.iterdir()):
+        results_dir = analysis_dir / "results"
+        if not results_dir.exists():
+            continue
+        runs = sorted(results_dir.iterdir())
+        if not runs:
+            continue
+        run_dir = runs[-1]
+        peaks_file = run_dir / "peaks.json"
+        ms_file = run_dir / "ms_clean.npy"
+        if not (peaks_file.exists() and ms_file.exists()):
+            continue
+        ms = np.load(ms_file)
+        tic = ms.sum(axis=1)
+        with open(peaks_file) as f:
+            result_data = json.load(f)
+        for pk_data in result_data["peaks"]:
+            if not pk_data["components"]:
+                continue
+            start, stop = pk_data["start"], pk_data["stop"]
+            height = float(tic[start:stop].max())
+            all_peaks.append({
+                "name": analysis_dir.name,
+                "ms": ms,
+                "peak": pk_data,
+                "height": height,
+            })
+    return all_peaks
+
+
+def _plot_peak_grid(peaks_data, title, n=10):
+    """Plot a grid of peaks: ions (faint) + component models (bold)."""
+    plots = []
+    for entry in peaks_data[:n]:
+        pk = entry["peak"]
+        ms = entry["ms"]
+        name = entry["name"]
+        start, stop = pk["start"], pk["stop"]
+        peak_ms = ms[start:stop, :]
+        peak_scans = np.arange(start, stop)
+        n_comp = pk["n_components"]
+
+        top_match = pk["components"][0]["matches"][0]["molecule"]["name"]
+        cos = pk["components"][0]["matches"][0]["score"]
+
+        p = figure(title=f"{name} [{start}:{stop}] {n_comp}c",
+                   width=280, height=200)
+
+        # All ions faint
+        palette = TolRainbow[23]
+        ion_max = peak_ms.max(axis=0)
+        active_ions = [i for i in range(peak_ms.shape[1]) if ion_max[i] > 0]
+        for mz in active_ions:
+            p.line(peak_scans, peak_ms[:, mz], line_width=0.5, line_alpha=0.15,
+                   color=palette[mz % 23])
+
+        # Component models
+        comp_palette = Category10[max(n_comp, 3)]
+        models = []
+        for comp in pk["components"]:
+            profile = np.array(comp["profile"])
+            spectrum = np.array(comp["spectrum"])
+            models.append(profile * sum(spectrum))
+        if models:
+            models_arr = np.column_stack(models)
+            if models_arr.max() > 0:
+                models_arr = models_arr * (peak_ms.max() / models_arr.max())
+            for i in range(models_arr.shape[1]):
+                p.line(peak_scans, models_arr[:, i], line_width=2,
+                       color=comp_palette[i % len(comp_palette)])
+
+        p.title.text_font_size = "8pt"
+        plots.append(p)
+
+    return gridplot([plots[i:i+5] for i in range(0, len(plots), 5)], merge_tools=False)
+
+
+def plot_real_data_peaks():
+    """Load all pipeline results, bin by height, return grids."""
+    all_peaks = _load_all_pipeline_results()
+    all_peaks.sort(key=lambda p: -p["height"])
+    n = len(all_peaks)
+    third = n // 3
+
+    large = all_peaks[:third]
+    medium = all_peaks[third:2 * third]
+    small = all_peaks[2 * third:]
+
+    random.seed(42)
+    random.shuffle(large)
+    random.shuffle(medium)
+    random.shuffle(small)
+
+    return (
+        _plot_peak_grid(large, "Large peaks", n=10),
+        _plot_peak_grid(medium, "Medium peaks", n=10),
+        _plot_peak_grid(small, "Small peaks", n=10),
+    )
+
+
+def build_real_data_post():
+    p_large, p_medium, p_small = plot_real_data_peaks()
+    s1, d1 = components(p_large)
+    s2, d2 = components(p_medium)
+    s3, d3 = components(p_small)
+
+    body = f"""
+<h1>Deconvoluting Real GC-MS Peaks</h1>
+<p class="subtitle">Applying our pipeline to the Copenhagen Soft Camel Cheese dataset</p>
+
+<p class="disclaimer"><strong>Warning:</strong> Spoiler alert &mdash; of course it does not work 😭. Well I tried at least.</p>
+
+<h2>1. The Pipeline</h2>
+<p>We ran the full pipeline on all 24 GC-MS analyses from the Copenhagen dataset:</p>
+<ol>
+  <li><strong>Preprocess</strong> &mdash; Gaussian smoothing (&sigma;=2) + per-ion AsLS baseline removal</li>
+  <li><strong>Peak picking</strong> &mdash; prominence-based detection on TIC, edge refinement, overlap resolution</li>
+  <li><strong>Component estimation</strong> &mdash; SVD features + RandomForest (trained on synthetic data)</li>
+  <li><strong>MCR-ALS</strong> &mdash; recover elution profiles and spectra</li>
+  <li><strong>Identification</strong> &mdash; cosine similarity search against 9,971 MassBank reference spectra</li>
+</ol>
+
+<h2>2. Large Peaks</h2>
+<p>These are the strongest peaks in the dataset. Gray lines are the individual ion traces,
+colored lines are the MCR-ALS component models scaled to match the ion intensity range.</p>
+
+<div class="plot">{d1}</div>
+{s1}
+
+<h2>3. Medium Peaks</h2>
+
+<div class="plot">{d2}</div>
+{s2}
+
+<h2>4. Small Peaks</h2>
+<p>The smallest peaks &mdash; noisier signals, harder to decompose.</p>
+
+<div class="plot">{d3}</div>
+{s3}
+
+<h2>5. What Goes Wrong</h2>
+<p>A few things are clearly off:</p>
+<ul>
+  <li><strong>Component count estimation</strong> &mdash; the model was trained on synthetic data with
+      clean, well-separated peaks. Real peaks are messier, and the estimator often overshoots
+      (predicting 10 components for what looks like 1-2 molecules).</li>
+  <li><strong>MCR-ALS with too many components</strong> &mdash; when given more components than actually
+      present, MCR-ALS splits real peaks into fragments or fits noise.</li>
+  <li><strong>Cosine scores are low</strong> &mdash; even when the decomposition looks reasonable,
+      the recovered spectra often don't match the reference library well. Real spectra have
+      different fragmentation patterns than textbook EI spectra.</li>
+  <li><strong>Baseline residuals</strong> &mdash; some peaks still have baseline artifacts that
+      confuse the decomposition.</li>
+</ul>
+
+<h2>6. What's Next</h2>
+<p>Nothing, I'm tired of this unsolvable problem. I'll take a break for now before I go insane.</p>
+
+<p><a href="mcr-als.html">&larr; Part 3: Recovering Elution Profiles with MCR-ALS</a></p>"""
+
+    html = wrap_page("Deconvoluting Real GC-MS Peaks", body, nav_back=True, page_id="real-data")
+    Path("posts").mkdir(exist_ok=True)
+    Path("posts/real-data.html").write_text(html)
+    print("-> posts/real-data.html")
+
+
 if __name__ == "__main__":
     print("Building index...")
     build_index()
@@ -1482,4 +1652,6 @@ if __name__ == "__main__":
     build_estimator_post()
     print("Building post 3: mcr-als...")
     build_mcr_als_post()
+    print("Building post 4: real data...")
+    build_real_data_post()
     print("Done!")
