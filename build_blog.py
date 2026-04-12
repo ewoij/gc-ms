@@ -75,6 +75,7 @@ def wrap_page(title, body, nav_back=False, page_id=None):
 {nav}
 {body}
 {comments}
+<script defer src="https://cdn.vercel-insights.com/v1/script.js"></script>
 </body>
 </html>"""
 
