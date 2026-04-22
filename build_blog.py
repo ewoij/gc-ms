@@ -1,6 +1,7 @@
 """Generate the multi-page blog with embedded Bokeh plots."""
 
 import csv
+import html
 import json
 import random
 from pathlib import Path
@@ -60,8 +61,11 @@ def wrap_page(title, body, nav_back=False, page_id=None):
     if page_id:
         comments = f"""
 <div style="margin-top: 3em;">
-<script async src="https://talk.hyvor.com/embed/embed.js" type="module"></script>
-<hyvor-talk-comments website-id="15252" page-id="{page_id}"></hyvor-talk-comments>
+<div data-commentor
+     data-slug="{page_id}"
+     data-title="{html.escape(title, quote=True)}"
+     data-url="https://gcms.jonasberdoz.dev/posts/{page_id}.html"></div>
+<script async src="https://commentor-mu.vercel.app/embed.js"></script>
 </div>"""
     return f"""<!DOCTYPE html>
 <html lang="en">
