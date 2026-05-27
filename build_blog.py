@@ -64,7 +64,8 @@ def wrap_page(title, body, nav_back=False, page_id=None):
 <div data-commentor
      data-slug="{page_id}"
      data-title="{html.escape(title, quote=True)}"
-     data-url="https://gcms.jonasberdoz.dev/posts/{page_id}.html"></div>
+     data-url="https://gcms.jonasberdoz.dev/posts/{page_id}.html"
+     data-theme="light"></div>
 <script async src="https://commentor-mu.vercel.app/embed.js"></script>
 </div>"""
     return f"""<!DOCTYPE html>
